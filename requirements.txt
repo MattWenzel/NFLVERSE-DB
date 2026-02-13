@@ -2,3 +2,4 @@
 nfl_data_py
 nflreadpy
 pandas
+pyarrow

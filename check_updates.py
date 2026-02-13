@@ -44,7 +44,7 @@ RELEASE_MAP = {
         "asset_pattern": r"snap_counts_(\d{4})",
     },
     "depth_charts": {
-        "tables": ["depth_charts"],
+        "tables": ["depth_charts", "depth_charts_2025"],
         "year_partitioned": True,
         "asset_pattern": r"depth_charts_(\d{4})",
     },

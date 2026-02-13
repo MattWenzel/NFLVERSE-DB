@@ -16,6 +16,7 @@ Usage:
     python3 update_db.py --dry-run                    # Preview what would change
     python3 update_db.py --no-backup                  # Skip backup step
     python3 update_db.py --check-first                # Run check_updates before updating
+    python3 update_db.py --all --output nflverse_v2.db  # Full refresh to a new DB file
 """
 
 import argparse
@@ -32,149 +33,9 @@ import pandas as pd
 from config import DB_PATH, METADATA_PATH, PBP_DB_PATH
 
 # ---------------------------------------------------------------------------
-# Column lists — reused from the original build scripts
+# No column filters or renames — we use nflverse-native column names.
+# All columns from nflreadpy are kept as-is (including defensive, kicking, ST).
 # ---------------------------------------------------------------------------
-
-GAME_STATS_COLS = [
-    "gsis_id", "season", "week", "season_type", "team", "opponent",
-    "completions", "pass_attempts", "passing_yards", "passing_tds",
-    "interceptions", "sacks", "sack_yards", "sack_fumbles",
-    "sack_fumbles_lost", "passing_air_yards", "passing_yards_after_catch",
-    "passing_first_downs", "passing_epa", "passing_2pt_conversions",
-    "carries", "rushing_yards", "rushing_tds", "rushing_fumbles",
-    "rushing_fumbles_lost", "rushing_first_downs", "rushing_epa",
-    "rushing_2pt_conversions", "targets", "receptions", "receiving_yards",
-    "receiving_tds", "receiving_fumbles", "receiving_fumbles_lost",
-    "receiving_air_yards", "receiving_yards_after_catch",
-    "receiving_first_downs", "receiving_epa", "receiving_2pt_conversions",
-    "target_share", "air_yards_share", "wopr", "racr", "pacr", "dakota",
-    "special_teams_tds", "fantasy_points", "fantasy_points_ppr",
-]
-
-SEASON_STATS_COLS = [
-    "gsis_id", "season", "season_type", "team", "games",
-    "completions", "pass_attempts", "passing_yards", "passing_tds",
-    "interceptions", "sacks", "sack_yards", "sack_fumbles",
-    "sack_fumbles_lost", "passing_air_yards", "passing_yards_after_catch",
-    "passing_first_downs", "passing_epa", "passing_2pt_conversions",
-    "carries", "rushing_yards", "rushing_tds", "rushing_fumbles",
-    "rushing_fumbles_lost", "rushing_first_downs", "rushing_epa",
-    "rushing_2pt_conversions", "targets", "receptions", "receiving_yards",
-    "receiving_tds", "receiving_fumbles", "receiving_fumbles_lost",
-    "receiving_air_yards", "receiving_yards_after_catch",
-    "receiving_first_downs", "receiving_epa", "receiving_2pt_conversions",
-    "special_teams_tds", "fantasy_points", "fantasy_points_ppr",
-]
-
-PLAYERS_COLS = [
-    "gsis_id", "display_name", "first_name", "last_name", "position",
-    "position_group", "current_team", "jersey_number", "height", "weight",
-    "birth_date", "college", "college_conference", "rookie_season",
-    "last_season", "years_of_experience", "status", "headshot_url",
-    "pfr_id", "espn_id", "pff_id", "draft_year", "draft_round",
-    "draft_pick", "draft_team",
-]
-
-PLAYER_IDS_COLS = [
-    "gsis_id", "name", "position", "team", "espn_id", "yahoo_id",
-    "fantasypros_id", "sleeper_id", "pfr_id", "pff_id", "cbs_id",
-    "rotowire_id", "rotoworld_id", "fantasy_data_id", "sportradar_id",
-    "mfl_id", "fleaflicker_id", "stats_id", "stats_global_id",
-    "cfbref_id", "nfl_id",
-]
-
-GAMES_COLS = [
-    "game_id", "season", "game_type", "week", "gameday", "weekday",
-    "gametime", "away_team", "home_team", "away_score", "home_score",
-    "location", "result", "total", "overtime", "spread_line",
-    "total_line", "away_moneyline", "home_moneyline", "away_rest",
-    "home_rest", "stadium", "stadium_id", "roof", "surface", "temp",
-    "wind", "away_coach", "home_coach", "referee",
-]
-
-DRAFT_PICKS_COLS = [
-    "season", "round", "pick", "team", "gsis_id", "pfr_id",
-    "player_name", "position", "college", "age",
-]
-
-COMBINE_COLS = [
-    "season", "player_name", "position", "school", "height", "weight",
-    "forty", "bench", "vertical", "broad_jump", "cone", "shuttle",
-    "pfr_id", "cfb_id",
-]
-
-# PBP columns — same as build_pbp_db.py KEEP_COLUMNS
-PBP_COLS = [
-    "game_id", "play_id", "old_game_id", "season", "week", "season_type",
-    "game_date", "game_half", "quarter_seconds_remaining", "half_seconds_remaining",
-    "game_seconds_remaining", "qtr", "down", "ydstogo", "yardline_100",
-    "posteam", "defteam", "posteam_score", "defteam_score", "score_differential",
-    "home_team", "away_team",
-    "desc", "play_type", "yards_gained", "air_yards", "yards_after_catch",
-    "first_down", "rush", "pass", "sack", "touchdown", "interception",
-    "fumble", "fumble_lost", "complete_pass", "incomplete_pass",
-    "passer_player_id", "passer_player_name",
-    "rusher_player_id", "rusher_player_name",
-    "receiver_player_id", "receiver_player_name",
-    "fantasy_player_id", "fantasy_player_name",
-    "kicker_player_id", "kicker_player_name",
-    "punter_player_id", "punter_player_name",
-    "interception_player_id", "interception_player_name",
-    "fumbled_1_player_id", "fumbled_1_player_name",
-    "solo_tackle_1_player_id", "solo_tackle_1_player_name",
-    "sack_player_id", "sack_player_name",
-    "fantasy",
-    "shotgun", "no_huddle", "qb_dropback", "qb_scramble", "qb_spike",
-    "pass_location", "run_location", "run_gap",
-    "field_goal_attempt", "field_goal_result", "kick_distance",
-    "extra_point_attempt", "extra_point_result", "two_point_attempt", "two_point_conv_result",
-    "penalty", "penalty_yards", "penalty_team",
-    "epa", "wp", "wpa", "cp", "cpoe",
-    "drive", "fixed_drive", "drive_play_count",
-]
-
-# ---------------------------------------------------------------------------
-# nflreadpy column renames (differences from nfl_data_py)
-# ---------------------------------------------------------------------------
-
-NFLREADPY_GAME_STATS_RENAMES = {
-    "player_id": "gsis_id",
-    "opponent_team": "opponent",
-    "attempts": "pass_attempts",
-    "passing_interceptions": "interceptions",
-    "sacks_suffered": "sacks",
-    "sack_yards_lost": "sack_yards",
-}
-
-NFLREADPY_SEASON_STATS_RENAMES = {
-    "player_id": "gsis_id",
-    "attempts": "pass_attempts",
-    "passing_interceptions": "interceptions",
-    "sacks_suffered": "sacks",
-    "sack_yards_lost": "sack_yards",
-}
-
-NFLREADPY_PLAYERS_RENAMES = {
-    "latest_team": "current_team",
-    "headshot": "headshot_url",
-    "college_name": "college",
-}
-
-NFLREADPY_DRAFT_RENAMES = {
-    "pfr_player_id": "pfr_id",
-    "pfr_player_name": "player_name",
-}
-
-NFLREADPY_COMBINE_RENAMES = {
-    "pos": "position",
-    "ht": "height",
-    "wt": "weight",
-}
-
-NFLREADPY_SNAP_COUNTS_RENAMES = {
-    "game": "game_id",
-    "pfr_game": "pfr_game_id",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -188,24 +49,17 @@ def _polars_to_pandas(df):
     return df
 
 
-def _filter_cols(df, col_list):
-    """Keep only columns present in both the DataFrame and our schema."""
-    available = [c for c in col_list if c in df.columns]
-    return df[available]
-
-
 class TableConfig:
     """Configuration for how to fetch and update a single table."""
 
     def __init__(self, name, *, db="main", update_mode="year_partition",
-                 fetch_fn=None, renames=None, columns=None, dedup_cols=None):
+                 fetch_fn=None, dedup_cols=None, drop_na_col=None):
         self.name = name
         self.db = db  # "main" or "pbp"
         self.update_mode = update_mode  # "year_partition" or "full_replace"
         self.fetch_fn = fetch_fn
-        self.renames = renames or {}
-        self.columns = columns or []
         self.dedup_cols = dedup_cols  # subset columns for drop_duplicates
+        self.drop_na_col = drop_na_col  # column to dropna on (e.g. "player_id")
 
     def get_db_path(self):
         return PBP_DB_PATH if self.db == "pbp" else DB_PATH
@@ -257,19 +111,25 @@ def _fetch_depth_charts(years):
 
 
 def _fetch_ngs_stats(_years=None):
+    seasons = list(range(2016, datetime.now().year))
     all_data = []
     for stat_type in ["passing", "rushing", "receiving"]:
-        df = _polars_to_pandas(nflreadpy.load_nextgen_stats(stat_type=stat_type))
+        df = _polars_to_pandas(
+            nflreadpy.load_nextgen_stats(seasons=seasons, stat_type=stat_type)
+        )
         df["stat_type"] = stat_type
         all_data.append(df)
     return pd.concat(all_data, ignore_index=True)
 
 
 def _fetch_pfr_advanced(_years=None):
+    seasons = list(range(2018, datetime.now().year))
     all_data = []
     for stat_type in ["pass", "rush", "rec"]:
         df = _polars_to_pandas(
-            nflreadpy.load_pfr_advstats(stat_type=stat_type, summary_level="season")
+            nflreadpy.load_pfr_advstats(
+                seasons=seasons, stat_type=stat_type, summary_level="season"
+            )
         )
         df["stat_type"] = stat_type
         all_data.append(df)
@@ -288,102 +148,85 @@ def _fetch_pbp(years):
     return df
 
 
-# All table configs
+# All table configs — nflverse-native column names, no renames or column filters.
 TABLE_CONFIGS = {
     "game_stats": TableConfig(
         "game_stats",
         update_mode="year_partition",
         fetch_fn=_fetch_game_stats,
-        renames=NFLREADPY_GAME_STATS_RENAMES,
-        columns=GAME_STATS_COLS,
-        dedup_cols=["gsis_id", "season", "week"],
+        dedup_cols=["player_id", "season", "week"],
+        drop_na_col="player_id",
     ),
     "season_stats": TableConfig(
         "season_stats",
         update_mode="year_partition",
         fetch_fn=_fetch_season_stats,
-        renames=NFLREADPY_SEASON_STATS_RENAMES,
-        columns=SEASON_STATS_COLS,
+        drop_na_col="player_id",
     ),
     "games": TableConfig(
         "games",
         update_mode="year_partition",
         fetch_fn=_fetch_games,
-        renames={},
-        columns=GAMES_COLS,
     ),
     "players": TableConfig(
         "players",
         update_mode="full_replace",
         fetch_fn=_fetch_players,
-        renames=NFLREADPY_PLAYERS_RENAMES,
-        columns=PLAYERS_COLS,
         dedup_cols=["gsis_id"],
+        drop_na_col="gsis_id",
     ),
     "player_ids": TableConfig(
         "player_ids",
         update_mode="full_replace",
         fetch_fn=_fetch_player_ids,
-        renames={},
-        columns=PLAYER_IDS_COLS,
         dedup_cols=["gsis_id"],
+        drop_na_col="gsis_id",
     ),
     "draft_picks": TableConfig(
         "draft_picks",
         update_mode="full_replace",
         fetch_fn=_fetch_draft_picks,
-        renames=NFLREADPY_DRAFT_RENAMES,
-        columns=DRAFT_PICKS_COLS,
     ),
     "combine": TableConfig(
         "combine",
         update_mode="full_replace",
         fetch_fn=_fetch_combine,
-        renames=NFLREADPY_COMBINE_RENAMES,
-        columns=COMBINE_COLS,
     ),
     "snap_counts": TableConfig(
         "snap_counts",
         update_mode="year_partition",
         fetch_fn=_fetch_snap_counts,
-        renames=NFLREADPY_SNAP_COUNTS_RENAMES,
-        columns=None,  # Keep all columns (schema managed by add_supplementary_tables)
     ),
     "depth_charts": TableConfig(
         "depth_charts",
         update_mode="year_partition",
         fetch_fn=_fetch_depth_charts,
-        renames={},
-        columns=None,
+    ),
+    "depth_charts_2025": TableConfig(
+        "depth_charts_2025",
+        update_mode="year_partition",
+        fetch_fn=_fetch_depth_charts,
     ),
     "ngs_stats": TableConfig(
         "ngs_stats",
         update_mode="full_replace",
         fetch_fn=_fetch_ngs_stats,
-        renames={},
-        columns=None,
     ),
     "pfr_advanced": TableConfig(
         "pfr_advanced",
         update_mode="full_replace",
         fetch_fn=_fetch_pfr_advanced,
-        renames={},
-        columns=None,
     ),
     "qbr": TableConfig(
         "qbr",
         update_mode="full_replace",
         fetch_fn=_fetch_qbr,
-        renames={},
-        columns=None,
     ),
     "play_by_play": TableConfig(
         "play_by_play",
         db="pbp",
         update_mode="year_partition",
         fetch_fn=_fetch_pbp,
-        renames={},
-        columns=PBP_COLS,
     ),
 }
 
@@ -404,6 +247,40 @@ def create_backup(db_path):
 # ---------------------------------------------------------------------------
 # Year-partition update
 # ---------------------------------------------------------------------------
+
+def _table_exists(conn, table_name):
+    """Check if a table exists in the database."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    )
+    return cur.fetchone()[0] > 0
+
+
+def _add_missing_columns(conn, table_name, df):
+    """Add any columns present in df but missing from the table.
+
+    Handles schema drift between years (e.g., game_id added in later seasons).
+    """
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info([{table_name}])")
+    existing_cols = {row[1] for row in cur.fetchall()}
+    new_cols = [c for c in df.columns if c not in existing_cols]
+    for col in new_cols:
+        # Infer SQLite type from pandas dtype
+        dtype = df[col].dtype
+        if dtype.kind == "i":
+            col_type = "INTEGER"
+        elif dtype.kind == "f":
+            col_type = "REAL"
+        else:
+            col_type = "TEXT"
+        conn.execute(f"ALTER TABLE [{table_name}] ADD COLUMN [{col}] {col_type}")
+    if new_cols:
+        conn.commit()
+        print(f"(added {len(new_cols)} cols: {', '.join(new_cols)}) ", end="", flush=True)
+
 
 def update_year_partition(conn, config, years, dry_run=False):
     """Delete + re-insert data for specific years."""
@@ -434,13 +311,9 @@ def update_year_partition(conn, config, years, dry_run=False):
             print("no data returned")
             continue
 
-        # Apply renames
-        if config.renames:
-            df = df.rename(columns=config.renames)
-
-        # Filter to schema columns
-        if config.columns:
-            df = _filter_cols(df, config.columns)
+        # Drop rows with null primary identifiers
+        if config.drop_na_col and config.drop_na_col in df.columns:
+            df = df.dropna(subset=[config.drop_na_col])
 
         # Deduplicate
         if config.dedup_cols:
@@ -448,17 +321,31 @@ def update_year_partition(conn, config, years, dry_run=False):
             if dedup_available:
                 df = df.drop_duplicates(subset=dedup_available, keep="first")
 
-        # Transaction: delete old + insert new
+        # If table doesn't exist yet, create it with the first year's data
+        if not _table_exists(conn, config.name):
+            try:
+                df.to_sql(config.name, conn, if_exists="replace", index=False)
+                conn.commit()
+                print(f"{len(df):,} rows inserted (table created)")
+            except Exception as e:
+                conn.rollback()
+                print(f"ERROR creating table: {e}")
+            continue
+
+        # Add any columns the table is missing (schema drift between years)
+        _add_missing_columns(conn, config.name, df)
+
+        # Delete old + insert new
         try:
-            conn.execute("BEGIN")
             conn.execute(
                 f"DELETE FROM [{config.name}] WHERE season = ?", (year,)
             )
+            conn.commit()
             df.to_sql(config.name, conn, if_exists="append", index=False)
-            conn.execute("COMMIT")
+            conn.commit()
             print(f"{len(df):,} rows inserted")
         except Exception as e:
-            conn.execute("ROLLBACK")
+            conn.rollback()
             print(f"ERROR (rolled back): {e}")
 
 
@@ -490,20 +377,14 @@ def update_full_replace(conn, config, dry_run=False):
         print("no data returned — skipping (kept existing)")
         return
 
-    # Apply renames
-    if config.renames:
-        df = df.rename(columns=config.renames)
-
-    # Filter to schema columns
-    if config.columns:
-        df = _filter_cols(df, config.columns)
+    # Drop rows with null primary identifiers
+    if config.drop_na_col and config.drop_na_col in df.columns:
+        df = df.dropna(subset=[config.drop_na_col])
 
     # Deduplicate
     if config.dedup_cols:
         dedup_available = [c for c in config.dedup_cols if c in df.columns]
         if dedup_available:
-            if "gsis_id" in dedup_available:
-                df = df.dropna(subset=["gsis_id"])
             df = df.drop_duplicates(subset=dedup_available, keep="first")
 
     df.to_sql(config.name, conn, if_exists="replace", index=False)
@@ -529,16 +410,16 @@ def backfill_season_stats_team(conn, years=None, dry_run=False):
     params = ()
     if years:
         placeholders = ",".join("?" for _ in years)
-        year_clause = f"AND s.season IN ({placeholders})"
+        year_clause = f"AND season_stats.season IN ({placeholders})"
         params = tuple(years)
 
     try:
         conn.execute(f"""
             UPDATE season_stats
-            SET team = (
+            SET recent_team = (
                 SELECT g.team
                 FROM game_stats g
-                WHERE g.gsis_id = season_stats.gsis_id
+                WHERE g.player_id = season_stats.player_id
                   AND g.season = season_stats.season
                 GROUP BY g.team
                 ORDER BY COUNT(*) DESC
@@ -546,7 +427,7 @@ def backfill_season_stats_team(conn, years=None, dry_run=False):
             )
             WHERE EXISTS (
                 SELECT 1 FROM game_stats g2
-                WHERE g2.gsis_id = season_stats.gsis_id
+                WHERE g2.player_id = season_stats.player_id
                   AND g2.season = season_stats.season
             )
             {year_clause}
@@ -566,18 +447,31 @@ def check_integrity(conn, dry_run=False):
     if dry_run:
         return
 
+    # Only run if all required tables exist
+    required = {"game_stats", "season_stats", "players"}
+    existing = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if not required.issubset(existing):
+        missing = required - existing
+        print(f"  Skipping integrity check (missing tables: {', '.join(sorted(missing))})")
+        return
+
     print("  Checking referential integrity...", end=" ", flush=True)
     cur = conn.cursor()
 
     cur.execute("""
         SELECT COUNT(*) FROM game_stats g
-        WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.gsis_id = g.gsis_id)
+        WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.gsis_id = g.player_id)
     """)
     orphan_games = cur.fetchone()[0]
 
     cur.execute("""
         SELECT COUNT(*) FROM season_stats s
-        WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.gsis_id = s.gsis_id)
+        WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.gsis_id = s.player_id)
     """)
     orphan_seasons = cur.fetchone()[0]
 
@@ -617,6 +511,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without modifying")
     parser.add_argument("--no-backup", action="store_true", help="Skip backup step")
     parser.add_argument("--check-first", action="store_true", help="Run check_updates.py first")
+    parser.add_argument("--output", type=str, help="Write to a different DB path (default: nflverse_custom.db)")
+    parser.add_argument("--output-pbp", type=str, help="Write PBP to a different DB path (default: pbp.db)")
     args = parser.parse_args()
 
     if args.check_first:
@@ -672,12 +568,19 @@ def main():
         print("Years: all (full refresh)")
     print()
 
-    # Backup
+    # Resolve output paths (allow --output to override defaults)
+    output_db = Path(args.output) if args.output else DB_PATH
+    output_pbp = Path(args.output_pbp) if args.output_pbp else PBP_DB_PATH
+
+    def _resolve_db_path(config):
+        return output_pbp if config.db == "pbp" else output_db
+
+    # Backup (only for default paths, not custom --output)
     dbs_touched = set()
     for name in table_names:
-        dbs_touched.add(TABLE_CONFIGS[name].get_db_path())
+        dbs_touched.add(_resolve_db_path(TABLE_CONFIGS[name]))
 
-    if not args.no_backup and not args.dry_run:
+    if not args.no_backup and not args.dry_run and not args.output:
         print("Creating backups:")
         for db_path in dbs_touched:
             create_backup(db_path)
@@ -695,7 +598,7 @@ def main():
 
         for name in table_names:
             config = TABLE_CONFIGS[name]
-            conn = connections[config.get_db_path()]
+            conn = connections[_resolve_db_path(config)]
 
             print(f"Updating {name}:")
 
@@ -709,7 +612,8 @@ def main():
                         "season_stats": range(1999, datetime.now().year + 1),
                         "games": range(1999, datetime.now().year + 1),
                         "snap_counts": range(2015, datetime.now().year + 1),
-                        "depth_charts": range(2001, datetime.now().year + 1),
+                        "depth_charts": range(2001, 2025),  # 2001-2024 (old schema)
+                        "depth_charts_2025": range(2025, datetime.now().year + 1),
                         "play_by_play": range(1999, datetime.now().year + 1),
                     }
                     yr_range = default_ranges.get(name, range(1999, datetime.now().year + 1))
@@ -728,7 +632,7 @@ def main():
             print()
 
         # Backfill season_stats.team if both were updated
-        main_conn = connections.get(DB_PATH)
+        main_conn = connections.get(output_db)
         if main_conn and updated_season_stats and updated_game_stats:
             backfill_season_stats_team(main_conn, years=years, dry_run=args.dry_run)
             print()
