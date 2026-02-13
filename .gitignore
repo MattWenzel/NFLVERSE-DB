@@ -9,5 +9,8 @@ __pycache__/
 # Keep the pre-built DB snapshot
 !nflverse_custom.db.zip
 
+# Update metadata (auto-generated, rebuild locally)
+update_metadata.json
+
 # Environment
 .env

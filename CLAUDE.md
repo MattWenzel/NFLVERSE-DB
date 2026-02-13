@@ -44,6 +44,23 @@ A pre-built snapshot is available as `nflverse_custom.db.zip` — just unzip to 
 - **ESPN ID** (`3139477`) — Used by `qbr`
 - Join via `player_ids` table for cross-reference
 
+## Update Scripts
+
+```bash
+# Check for upstream data changes
+python3 check_updates.py           # Human-readable report
+python3 check_updates.py --json    # Machine-readable JSON
+python3 check_updates.py --init    # Initialize metadata from current DB state
+
+# Incremental updates (uses nflreadpy)
+python3 update_db.py --years 2025                 # Update specific year(s)
+python3 update_db.py --tables game_stats players   # Update specific table(s)
+python3 update_db.py --pbp --years 2025            # Update play-by-play
+python3 update_db.py --all                         # Force full refresh
+python3 update_db.py --dry-run                     # Preview only
+python3 update_db.py --check-first                 # Run check_updates first
+```
+
 ## Files
 
 | File | Purpose |
@@ -51,14 +68,17 @@ A pre-built snapshot is available as `nflverse_custom.db.zip` — just unzip to 
 | `build_nflverse_db.py` | Builds core DB (players, game_stats, season_stats, etc.) |
 | `build_pbp_db.py` | Builds play-by-play DB |
 | `add_supplementary_tables.py` | Adds snap_counts, ngs_stats, depth_charts, pfr_advanced, qbr |
-| `config.py` | DB path configuration |
-| `requirements.txt` | Python dependencies (`nfl_data_py`, `pandas`) |
+| `check_updates.py` | Checks GitHub releases for new/changed data vs local DB state |
+| `update_db.py` | Incrementally updates databases with new data (uses `nflreadpy`) |
+| `config.py` | DB path configuration (`DB_PATH`, `PBP_DB_PATH`, `METADATA_PATH`) |
+| `requirements.txt` | Python dependencies (`nfl_data_py`, `nflreadpy`, `pandas`) |
 | `docs/DATABASE.md` | Full schema reference |
 | `nflverse_custom.db.zip` | Pre-built DB snapshot |
+| `update_metadata.json` | Auto-generated tracking file (gitignored) |
 
 ## Notes
 
-- 2025 stats migrated from old fantasyDB (nflverse hasn't released 2025 yet); team data included in both game and season logs
+- 2025 stats migrated from old fantasyDB (nflverse has since released 2025 data — use `update_db.py --years 2025` to refresh); team data included in both game and season logs
 - `season_stats.team` is backfilled from `game_stats` (most common team per player-season); nflverse source data doesn't populate it
 - Kicker stats not tracked by nflverse
 - `nfl-data-py` archived Sept 2025, successor is `nflreadpy`
