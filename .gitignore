@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+
+# Database files (large, rebuild locally)
+*.db
+*.db-shm
+*.db-wal
+
+# Keep the pre-built DB snapshot
+!nflverse_custom.db.zip
+
+# Environment
+.env
