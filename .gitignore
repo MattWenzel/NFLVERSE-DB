@@ -3,6 +3,7 @@ __pycache__/
 
 # Database files (large, rebuild locally)
 *.db
+*.db.bak
 *.db-shm
 *.db-wal
 
