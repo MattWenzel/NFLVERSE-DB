@@ -7,16 +7,16 @@ tables, and full replacement for reference tables. Creates a rolling backup
 before modifications and wraps each update in a transaction.
 
 Usage:
-    python3 update_db.py                              # Update all with detected changes
-    python3 update_db.py --tables game_stats players  # Specific tables
-    python3 update_db.py --years 2025                 # Specific year(s)
-    python3 update_db.py --pbp                        # Update play-by-play DB
-    python3 update_db.py --pbp --years 2025           # PBP for specific year
-    python3 update_db.py --all                        # Force full refresh of all tables
-    python3 update_db.py --dry-run                    # Preview what would change
-    python3 update_db.py --no-backup                  # Skip backup step
-    python3 update_db.py --check-first                # Run check_updates before updating
-    python3 update_db.py --all --output nflverse_v2.db  # Full refresh to a new DB file
+    python3 scripts/update_db.py                              # Update all with detected changes
+    python3 scripts/update_db.py --tables game_stats players  # Specific tables
+    python3 scripts/update_db.py --years 2025                 # Specific year(s)
+    python3 scripts/update_db.py --pbp                        # Update play-by-play DB
+    python3 scripts/update_db.py --pbp --years 2025           # PBP for specific year
+    python3 scripts/update_db.py --all                        # Force full refresh of all tables
+    python3 scripts/update_db.py --dry-run                    # Preview what would change
+    python3 scripts/update_db.py --no-backup                  # Skip backup step
+    python3 scripts/update_db.py --check-first                # Run check_updates before updating
+    python3 scripts/update_db.py --all --output data/nflverse_v2.db  # Full refresh to a new DB file
 """
 
 import argparse
@@ -107,6 +107,12 @@ def _fetch_snap_counts(years):
 
 def _fetch_depth_charts(years):
     df = _polars_to_pandas(nflreadpy.load_depth_charts(years))
+    return df
+
+
+def _fetch_depth_charts_2025(_years=None):
+    """Fetch 2025+ depth charts (different schema from pre-2025)."""
+    df = _polars_to_pandas(nflreadpy.load_depth_charts([2025]))
     return df
 
 
@@ -204,8 +210,8 @@ TABLE_CONFIGS = {
     ),
     "depth_charts_2025": TableConfig(
         "depth_charts_2025",
-        update_mode="year_partition",
-        fetch_fn=_fetch_depth_charts,
+        update_mode="full_replace",
+        fetch_fn=_fetch_depth_charts_2025,
     ),
     "ngs_stats": TableConfig(
         "ngs_stats",
@@ -400,7 +406,7 @@ def backfill_season_stats_team(conn, years=None, dry_run=False):
     Backfill season_stats.team from game_stats (most common team per player-season).
     Matches existing behavior noted in CLAUDE.md.
     """
-    print("  Backfilling season_stats.team from game_stats...", end=" ", flush=True)
+    print("  Backfilling season_stats.recent_team from game_stats...", end=" ", flush=True)
 
     if dry_run:
         print("would backfill")
@@ -436,6 +442,20 @@ def backfill_season_stats_team(conn, years=None, dry_run=False):
         print("done")
     except Exception as e:
         print(f"ERROR: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Index creation
+# ---------------------------------------------------------------------------
+
+def create_indexes(conn):
+    """Create standard indexes on the main database."""
+    print("  Creating indexes...", end=" ", flush=True)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_game_stats_player_season ON game_stats(player_id, season)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_season_stats_player_season ON season_stats(player_id, season)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_players_gsis_id ON players(gsis_id)")
+    conn.commit()
+    print("done")
 
 
 # ---------------------------------------------------------------------------
@@ -613,7 +633,6 @@ def main():
                         "games": range(1999, datetime.now().year + 1),
                         "snap_counts": range(2015, datetime.now().year + 1),
                         "depth_charts": range(2001, 2025),  # 2001-2024 (old schema)
-                        "depth_charts_2025": range(2025, datetime.now().year + 1),
                         "play_by_play": range(1999, datetime.now().year + 1),
                     }
                     yr_range = default_ranges.get(name, range(1999, datetime.now().year + 1))
@@ -635,6 +654,11 @@ def main():
         main_conn = connections.get(output_db)
         if main_conn and updated_season_stats and updated_game_stats:
             backfill_season_stats_team(main_conn, years=years, dry_run=args.dry_run)
+            print()
+
+        # Create indexes on main DB (especially important for --all fresh builds)
+        if main_conn and not args.dry_run and args.all:
+            create_indexes(main_conn)
             print()
 
         # Integrity check on main DB

@@ -6,9 +6,9 @@ Queries the GitHub Releases API for nflverse-data and compares timestamps/asset 
 against a local metadata file. Also scans local DBs for current row counts and max seasons.
 
 Usage:
-    python3 check_updates.py           # Full check, human-readable report
-    python3 check_updates.py --json    # Machine-readable JSON output
-    python3 check_updates.py --init    # Initialize metadata from current DB state
+    python3 scripts/check_updates.py           # Full check, human-readable report
+    python3 scripts/check_updates.py --json    # Machine-readable JSON output
+    python3 scripts/check_updates.py --init    # Initialize metadata from current DB state
 """
 
 import argparse
@@ -454,12 +454,12 @@ def print_report(results, db_state):
     suggestions = []
     if new_years:
         years_str = " ".join(str(y) for y in sorted(new_years))
-        suggestions.append(f"python3 update_db.py --years {years_str}")
+        suggestions.append(f"python3 scripts/update_db.py --years {years_str}")
     if updated_tables:
         tables_str = " ".join(updated_tables)
-        suggestions.append(f"python3 update_db.py --tables {tables_str}")
+        suggestions.append(f"python3 scripts/update_db.py --tables {tables_str}")
     if not suggestions and (results["new_data"] or results["updated"]):
-        suggestions.append("python3 update_db.py")
+        suggestions.append("python3 scripts/update_db.py")
 
     if suggestions:
         print("Suggested commands:")

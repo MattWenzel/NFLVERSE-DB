@@ -1286,23 +1286,19 @@ Data is sourced from [nflverse](https://github.com/nflverse) via `nflreadpy` (su
 ## Build Scripts
 
 ```bash
-# Core nflverse DB (1999-2025)
-python3 build_nflverse_db.py
+# Full build from scratch (all tables, all years)
+python3 scripts/update_db.py --all
 
-# Recent years only
-python3 build_nflverse_db.py --start-year 2020
-
-# Supplementary tables (snap counts, NGS, depth charts, PFR advanced, QBR)
-python3 add_supplementary_tables.py
-
-# Play-by-play database (separate)
-python3 build_pbp_db.py --start-year 1999 --end-year 2025
+# Full build to a specific output file
+python3 scripts/update_db.py --all --output data/nflverse_v2.db
 
 # Incremental updates
-python3 update_db.py --years 2025
-python3 update_db.py --tables game_stats players
-python3 update_db.py --pbp --years 2025
-python3 update_db.py --all --output nflverse_v2.db
+python3 scripts/update_db.py --years 2025
+python3 scripts/update_db.py --tables game_stats players
+python3 scripts/update_db.py --pbp --years 2025
+
+# Play-by-play (separate DB)
+python3 scripts/update_db.py --pbp --all
 ```
 
 ---
@@ -1318,7 +1314,7 @@ python3 update_db.py --all --output nflverse_v2.db
 - **NGS `stat_type`**: `passing`, `rushing`, `receiving`; `week=0` = season totals.
 - **PFR `stat_type`**: `pass`, `rush`, `rec` (different naming from NGS!).
 - **QBR**: `season_type` is `"Regular"` or `"Postseason"`; use `week_text` for "Season Total" filtering.
-- **Schema drift**: Handled automatically by `update_db.py` which adds missing columns via `ALTER TABLE`.
+- **Schema drift**: Handled automatically by `scripts/update_db.py` which adds missing columns via `ALTER TABLE`.
 - **Join path**: `game_stats.player_id = players.gsis_id` (same GSIS format, different column names).
-- **`nfl_data_py`**: Archived Sept 2025. Successor is `nflreadpy`. Legacy build scripts still use `nfl_data_py` for backwards compatibility.
+- **`nfl_data_py`**: Archived Sept 2025. Successor is `nflreadpy`.
 - **Draft picks**: Go back to 1980 with career stats, Pro Bowl/All-Pro counts, and HOF flag.

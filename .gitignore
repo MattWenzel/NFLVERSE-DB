@@ -2,16 +2,20 @@ __pycache__/
 *.pyc
 
 # Database files (large, rebuild locally)
-*.db
-*.db.bak
-*.db-shm
-*.db-wal
+data/*.db
+data/*.db.bak
+data/*.db-shm
+data/*.db-wal
 
-# Keep the pre-built DB snapshot
-!nflverse_custom.db.zip
+# Legacy databases
+legacy/*.db
+legacy/*.db.bak
 
-# Update metadata (auto-generated, rebuild locally)
-update_metadata.json
+# Keep the pre-built legacy snapshot
+!legacy/nflverse_custom.db.zip
+
+# Update metadata (auto-generated)
+data/update_metadata.json
 
 # Environment
 .env
