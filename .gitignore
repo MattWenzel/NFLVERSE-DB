@@ -14,6 +14,9 @@ legacy/*.db.bak
 # Keep the pre-built legacy snapshot
 !legacy/nflverse_custom.db.zip
 
+# Raw data files (downloaded from GitHub, rebuild locally)
+data/raw/
+
 # Update metadata (auto-generated)
 data/update_metadata.json
 

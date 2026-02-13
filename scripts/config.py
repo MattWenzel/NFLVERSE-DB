@@ -8,3 +8,4 @@ ROOT = Path(__file__).parent.parent
 DB_PATH = ROOT / "data" / "nflverse_v2.db"
 PBP_DB_PATH = ROOT / "data" / "pbp_v2.db"
 METADATA_PATH = ROOT / "data" / "update_metadata.json"
+RAW_DATA_PATH = ROOT / "data" / "raw"

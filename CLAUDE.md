@@ -19,6 +19,27 @@ Legacy DBs (`nflverse_custom.db`, `pbp.db`) use old custom column renames — do
 
 **Play-by-play**: 1.23M plays in separate `pbp_v2.db` (too large to combine)
 
+## Raw Data
+
+Raw parquet/CSV files are downloaded from GitHub into `data/raw/`, organized by release tag. The databases can be built entirely from these local files.
+
+```bash
+# Download all raw data (non-PBP)
+python3 scripts/download.py --all
+
+# Download play-by-play too (~466 MB)
+python3 scripts/download.py --tables play_by_play --all
+
+# Download specific tables/years
+python3 scripts/download.py --tables game_stats --years 2025
+python3 scripts/download.py --force                            # Re-download existing
+
+# Preview what would download
+python3 scripts/download.py --dry-run --all
+```
+
+**Folder structure:** `data/raw/{release_tag}/{filename}.parquet` (e.g., `data/raw/stats_player/stats_player_week_2025.parquet`)
+
 ## Build Scripts
 
 ```bash
@@ -56,7 +77,7 @@ python3 scripts/check_updates.py           # Human-readable report
 python3 scripts/check_updates.py --json    # Machine-readable JSON
 python3 scripts/check_updates.py --init    # Initialize metadata from current DB state
 
-# Incremental updates (uses nflreadpy)
+# Incremental updates
 python3 scripts/update_db.py --years 2025                 # Update specific year(s)
 python3 scripts/update_db.py --tables game_stats players   # Update specific table(s)
 python3 scripts/update_db.py --pbp --years 2025            # Update play-by-play
@@ -70,11 +91,13 @@ python3 scripts/update_db.py --all --output data/nflverse_v2.db # Full refresh t
 
 | File | Purpose |
 |------|---------|
-| `scripts/update_db.py` | Builds and incrementally updates databases (uses `nflreadpy`) |
+| `scripts/download.py` | Downloads raw parquet/CSV from GitHub into `data/raw/` |
+| `scripts/update_db.py` | Builds and incrementally updates databases from raw data or `nflreadpy` |
 | `scripts/check_updates.py` | Checks GitHub releases for new/changed data vs local DB state |
-| `scripts/config.py` | DB path configuration (`DB_PATH`, `PBP_DB_PATH`, `METADATA_PATH`) |
+| `scripts/config.py` | DB path configuration (`DB_PATH`, `PBP_DB_PATH`, `RAW_DATA_PATH`) |
 | `requirements.txt` | Python dependencies (`nflreadpy`, `pandas`, `pyarrow`) |
 | `docs/DATABASE.md` | Full schema reference |
+| `data/raw/` | Downloaded parquet/CSV source files (gitignored) |
 | `data/update_metadata.json` | Auto-generated tracking file (gitignored) |
 
 ## Notes
@@ -82,6 +105,7 @@ python3 scripts/update_db.py --all --output data/nflverse_v2.db # Full refresh t
 - `game_stats`/`season_stats` now include ALL ~114 nflverse columns (offensive, defensive, kicking, special teams, penalties, advanced). ~3x more rows than before (all position groups, not just skill positions)
 - `season_stats.recent_team` is backfilled from `game_stats.team` (most common team per player-season); nflverse source data doesn't populate it
 - `depth_charts` (2001-2024) and `depth_charts_2025` (2025+) are separate tables due to nflverse schema change in 2025
+- Raw data is downloaded from GitHub releases into `data/raw/` via `scripts/download.py` — databases can be built offline from local files
 - `nfl-data-py` archived Sept 2025, successor is `nflreadpy`
 - To join stats to players: `game_stats.player_id = players.gsis_id` (same GSIS format, different column names)
 - `game_id` column only populated for 2002+ in `game_stats` (nflverse doesn't provide it for 1999-2001)
