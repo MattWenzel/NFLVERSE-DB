@@ -43,13 +43,14 @@ python3 scripts/download.py --dry-run --all
 ## Build Scripts
 
 ```bash
-# Full build from scratch (all tables, all years)
+# Build from local files (preferred — requires download.py first)
+python3 scripts/build_db.py --all                              # Full build
+python3 scripts/build_db.py --tables game_stats --years 2025   # Specific tables/years
+python3 scripts/build_db.py --pbp --all                        # Play-by-play
+python3 scripts/build_db.py --dry-run --all                    # Preview only
+
+# Build via nflreadpy (backup — fetches from network directly)
 python3 scripts/update_db.py --all
-
-# Full build to a specific output file
-python3 scripts/update_db.py --all --output data/nflverse_v2.db
-
-# Play-by-play (separate DB)
 python3 scripts/update_db.py --pbp --all
 ```
 
@@ -92,7 +93,8 @@ python3 scripts/update_db.py --all --output data/nflverse_v2.db # Full refresh t
 | File | Purpose |
 |------|---------|
 | `scripts/download.py` | Downloads raw parquet/CSV from GitHub into `data/raw/` |
-| `scripts/update_db.py` | Builds and incrementally updates databases from raw data or `nflreadpy` |
+| `scripts/build_db.py` | Builds databases from local `data/raw/` files (preferred) |
+| `scripts/update_db.py` | Builds databases via `nflreadpy` network calls (backup) |
 | `scripts/check_updates.py` | Checks GitHub releases for new/changed data vs local DB state |
 | `scripts/config.py` | DB path configuration (`DB_PATH`, `PBP_DB_PATH`, `RAW_DATA_PATH`) |
 | `requirements.txt` | Python dependencies (`nflreadpy`, `pandas`, `pyarrow`) |
@@ -109,7 +111,7 @@ python3 scripts/update_db.py --all --output data/nflverse_v2.db # Full refresh t
 - `nfl-data-py` archived Sept 2025, successor is `nflreadpy`
 - To join stats to players: `game_stats.player_id = players.gsis_id` (same GSIS format, different column names)
 - `game_id` column only populated for 2002+ in `game_stats` (nflverse doesn't provide it for 1999-2001)
-- Schema drift between years is handled automatically — `scripts/update_db.py` adds missing columns via `ALTER TABLE`
+- Schema drift between years is handled automatically — `scripts/build_db.py` and `scripts/update_db.py` add missing columns via `ALTER TABLE`
 - `combine` table has no join edges — query separately
 - NGS `stat_type`: `passing`/`rushing`/`receiving`; `week=0` = season totals
 - PFR `stat_type`: `pass`/`rush`/`rec` (different naming!)
