@@ -1,118 +1,19 @@
-# nflverse DB
+# CLAUDE.md
 
-NFL player stats database built from [nflverse](https://github.com/nflverse/nflverse-data) data.
+This file points Claude Code at the canonical project documentation. See [`README.md`](README.md) for the full overview, quick start, and command reference, and [`docs/DATABASE.md`](docs/DATABASE.md) for the schema reference.
 
-## Quick Reference
+## Orientation cheatsheet
 
-| Database | Size | Tables | Rows | Years |
-|----------|------|--------|------|-------|
-| `nflverse_v2.db` | 298 MB | 13 | ~2.2M | 1999-2025 |
-| `pbp_v2.db` | 2,082 MB | 1 | 1.28M | 1999-2025 |
+- Two databases: `data/nflverse.db` (13 tables, ~2.25M rows) and `data/pbp.db` (1 table, 1.28M rows).
+- Build: `python3 scripts/download.py --all && python3 scripts/build_db.py --all`.
+- Incremental pull: `python3 scripts/download.py --years {year} --force && python3 scripts/build_db.py --years {year}`.
+- Shared pipeline lives in `scripts/pipeline.py`; `build_db.py` (local parquet) and `build_db_nflreadpy.py` (network via nflreadpy, used only as a fallback when the primary path breaks) are thin entry points that differ only in their fetch functions.
+- All tables use nflverse-native column names — no custom renames.
 
-Legacy DBs (`nflverse_custom.db`, `pbp.db`) use old custom column renames — do not mix with v2.
+## Quick gotchas
 
-## Key Tables
-
-**Core**: `players`, `player_ids`, `games`, `game_stats`, `season_stats`, `draft_picks`, `combine`
-
-**Supplementary**: `snap_counts` (2015+), `ngs_stats` (2016+), `depth_charts` (2001-2024), `depth_charts_2025` (2025+, different schema), `pfr_advanced` (2018+), `qbr` (2006-2023)
-
-**Play-by-play**: 1.23M plays in separate `pbp_v2.db` (too large to combine)
-
-## Raw Data
-
-Raw parquet/CSV files are downloaded from GitHub into `data/raw/`, organized by release tag. The databases can be built entirely from these local files.
-
-```bash
-# Download all raw data (non-PBP)
-python3 scripts/download.py --all
-
-# Download play-by-play too (~466 MB)
-python3 scripts/download.py --tables play_by_play --all
-
-# Download specific tables/years
-python3 scripts/download.py --tables game_stats --years 2025
-python3 scripts/download.py --force                            # Re-download existing
-
-# Preview what would download
-python3 scripts/download.py --dry-run --all
-```
-
-**Folder structure:** `data/raw/{release_tag}/{filename}.parquet` (e.g., `data/raw/stats_player/stats_player_week_2025.parquet`)
-
-## Build Scripts
-
-```bash
-# Build from local files (preferred — requires download.py first)
-python3 scripts/build_db.py --all                              # Full build
-python3 scripts/build_db.py --tables game_stats --years 2025   # Specific tables/years
-python3 scripts/build_db.py --pbp --all                        # Play-by-play
-python3 scripts/build_db.py --dry-run --all                    # Preview only
-
-# Build via nflreadpy (backup — fetches from network directly)
-python3 scripts/update_db.py --all
-python3 scripts/update_db.py --pbp --all
-```
-
-## ID System & Column Names
-
-All tables use **nflverse-native column names** (no custom renames). Key ID columns:
-
-- **`player_id`** (`00-0033873`, GSIS format) — Primary key in `game_stats`, `season_stats`
-- **`gsis_id`** (`00-0033873`) — Primary key in `players`, `player_ids`
-- **PFR ID** (`MahoPa00`) — Used by `snap_counts`, `pfr_advanced`
-- **ESPN ID** (`3139477`) — Used by `qbr`
-- Join via `player_ids` table for cross-reference
-
-Notable native names (differ from old custom renames):
-- `game_stats`/`season_stats`: `player_id` (not `gsis_id`), `opponent_team` (not `opponent`), `attempts` (not `pass_attempts`), `passing_interceptions` (not `interceptions`), `sacks_suffered` (not `sacks`), `sack_yards_lost` (not `sack_yards`)
-- `players`: `latest_team` (not `current_team`), `headshot` (not `headshot_url`), `college_name` (not `college`)
-- `draft_picks`: `pfr_player_id` (not `pfr_id`), `pfr_player_name` (not `player_name`)
-- `combine`: `pos` (not `position`), `ht` (not `height`), `wt` (not `weight`)
-
-## Update Scripts
-
-```bash
-# Check for upstream data changes
-python3 scripts/check_updates.py           # Human-readable report
-python3 scripts/check_updates.py --json    # Machine-readable JSON
-python3 scripts/check_updates.py --init    # Initialize metadata from current DB state
-
-# Incremental updates
-python3 scripts/update_db.py --years 2025                 # Update specific year(s)
-python3 scripts/update_db.py --tables game_stats players   # Update specific table(s)
-python3 scripts/update_db.py --pbp --years 2025            # Update play-by-play
-python3 scripts/update_db.py --all                         # Force full refresh
-python3 scripts/update_db.py --dry-run                     # Preview only
-python3 scripts/update_db.py --check-first                 # Run check_updates first
-python3 scripts/update_db.py --all --output data/nflverse_v2.db # Full refresh to new DB file
-```
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `scripts/download.py` | Downloads raw parquet/CSV from GitHub into `data/raw/` |
-| `scripts/build_db.py` | Builds databases from local `data/raw/` files (preferred) |
-| `scripts/update_db.py` | Builds databases via `nflreadpy` network calls (backup) |
-| `scripts/check_updates.py` | Checks GitHub releases for new/changed data vs local DB state |
-| `scripts/config.py` | DB path configuration (`DB_PATH`, `PBP_DB_PATH`, `RAW_DATA_PATH`) |
-| `requirements.txt` | Python dependencies (`nflreadpy`, `pandas`, `pyarrow`) |
-| `docs/DATABASE.md` | Full schema reference |
-| `data/raw/` | Downloaded parquet/CSV source files (gitignored) |
-| `data/update_metadata.json` | Auto-generated tracking file (gitignored) |
-
-## Notes
-
-- `game_stats`/`season_stats` now include ALL ~114 nflverse columns (offensive, defensive, kicking, special teams, penalties, advanced). ~3x more rows than before (all position groups, not just skill positions)
-- `season_stats.recent_team` is backfilled from `game_stats.team` (most common team per player-season); nflverse source data doesn't populate it
-- `depth_charts` (2001-2024) and `depth_charts_2025` (2025+) are separate tables due to nflverse schema change in 2025
-- Raw data is downloaded from GitHub releases into `data/raw/` via `scripts/download.py` — databases can be built offline from local files
-- `nfl-data-py` archived Sept 2025, successor is `nflreadpy`
-- To join stats to players: `game_stats.player_id = players.gsis_id` (same GSIS format, different column names)
-- `game_id` column only populated for 2002+ in `game_stats` (nflverse doesn't provide it for 1999-2001)
-- Schema drift between years is handled automatically — `scripts/build_db.py` and `scripts/update_db.py` add missing columns via `ALTER TABLE`
-- `combine` table has no join edges — query separately
-- NGS `stat_type`: `passing`/`rushing`/`receiving`; `week=0` = season totals
-- PFR `stat_type`: `pass`/`rush`/`rec` (different naming!)
-- QBR `game_week` is INTEGER, `week_text` is TEXT (use `week_text = "Season Total"` for season totals), `season_type` is `"Regular"`/`"Postseason"`
+- `season_stats.recent_team` is backfilled from `game_stats.team` (nflverse doesn't populate it).
+- `depth_charts` is split at 2025 (`depth_charts` for 2001–2024, `depth_charts_2025` for 2025+) because the upstream schema changed.
+- PFR uses `pass`/`rush`/`rec` for `stat_type`; NGS uses `passing`/`rushing`/`receiving`. Don't mix them up.
+- `game_id` in `game_stats` is missing for 1999–2001.
+- Join stats to player bio via `game_stats.player_id = players.gsis_id` (same GSIS format, different column names).
