@@ -26,8 +26,6 @@ Usage:
     python3 scripts/build_db_nflreadpy.py --all --output data/nflverse.db  # Full refresh to a new DB file
 """
 
-from datetime import datetime
-
 import nflreadpy
 import pandas as pd
 
@@ -81,11 +79,10 @@ def _fetch_depth_charts_2025(_years=None):
 
 
 def _fetch_ngs_stats(_years=None):
-    seasons = list(range(2016, datetime.now().year))
     all_data = []
     for stat_type in ["passing", "rushing", "receiving"]:
         df = _polars_to_pandas(
-            nflreadpy.load_nextgen_stats(seasons=seasons, stat_type=stat_type)
+            nflreadpy.load_nextgen_stats(seasons=True, stat_type=stat_type)
         )
         df["stat_type"] = stat_type
         all_data.append(df)
@@ -93,12 +90,11 @@ def _fetch_ngs_stats(_years=None):
 
 
 def _fetch_pfr_advanced(_years=None):
-    seasons = list(range(2018, datetime.now().year))
     all_data = []
     for stat_type in ["pass", "rush", "rec"]:
         df = _polars_to_pandas(
             nflreadpy.load_pfr_advstats(
-                seasons=seasons, stat_type=stat_type, summary_level="season"
+                stat_type=stat_type, summary_level="season"
             )
         )
         df["stat_type"] = stat_type
