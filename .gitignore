@@ -10,8 +10,18 @@ data/*.db-wal
 # Raw data files (downloaded from GitHub, rebuild locally)
 data/raw/
 
-# Update metadata (auto-generated)
+# Update metadata (auto-generated, machine-specific)
 data/update_metadata.json
 
-# Environment
+# Claude Code per-project settings (contains local permissions, can include secrets)
+.claude/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Environment / secrets
 .env
+.env.*
+!.env.example
