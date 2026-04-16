@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -99,22 +100,21 @@ PBP_TABLES = {"play_by_play"}
 
 
 def download_file(url, local_path, force=False):
-    """Download a single file. Returns True on success, False on skip/error."""
+    """Download a single file. Returns (status, message) where status is one of
+    'ok', 'skip', 'error'."""
     if local_path.exists() and local_path.stat().st_size > 0 and not force:
-        return "skip"
+        return "skip", f"  {local_path.name} (exists)"
 
     local_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         urlretrieve(url, local_path)
         size_mb = local_path.stat().st_size / (1024 * 1024)
-        print(f"  {local_path.name} ({size_mb:.1f} MB)")
-        return "ok"
+        return "ok", f"  {local_path.name} ({size_mb:.1f} MB)"
     except (HTTPError, URLError, OSError) as e:
-        print(f"  {local_path.name} FAILED: {e}")
         if local_path.exists():
             local_path.unlink()
-        return "error"
+        return "error", f"  {local_path.name} FAILED: {e}"
 
 
 def get_files_for_table(table_name, years=None):
@@ -163,6 +163,9 @@ def main():
     parser.add_argument("--all", action="store_true", help="Download all years (not just current)")
     parser.add_argument("--force", action="store_true", help="Re-download existing files")
     parser.add_argument("--dry-run", action="store_true", help="Preview what would download")
+    parser.add_argument("--workers", type=int, default=8,
+                        help="Parallel download workers (default: 8). "
+                             "Progress is shown in completion order, not input order.")
     args = parser.parse_args()
 
     # Determine which tables
@@ -204,17 +207,20 @@ def main():
         return
 
     print()
-    ok = skip = errors = 0
-    for i, (url, local) in enumerate(all_files, 1):
-        print(f"[{i}/{len(all_files)}] ", end="", flush=True)
-        result = download_file(url, local, force=args.force)
-        if result == "ok":
-            ok += 1
-        elif result == "skip":
-            skip += 1
-        else:
-            errors += 1
+    total = len(all_files)
+    counts = {"ok": 0, "skip": 0, "error": 0}
 
+    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+        futures = [
+            pool.submit(download_file, url, local, args.force)
+            for url, local in all_files
+        ]
+        for i, fut in enumerate(as_completed(futures), 1):
+            status, message = fut.result()
+            counts[status] += 1
+            print(f"[{i}/{total}] {message.lstrip()}", flush=True)
+
+    ok, skip, errors = counts["ok"], counts["skip"], counts["error"]
     print(f"\nDone: {ok} downloaded, {skip} skipped (already exist), {errors} errors")
     if skip and not args.force:
         print("Use --force to re-download existing files")
