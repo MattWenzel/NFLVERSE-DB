@@ -279,12 +279,19 @@ def check_updates():
             continue
 
         stored = metadata.get("releases", {}).get(tag, {})
-
+        remote_max = None
         if cfg["year_partitioned"] and cfg["asset_pattern"]:
-            # Check for new year files
             remote_max = extract_max_year(
                 release_info["assets"], cfg["asset_pattern"]
             )
+
+        # Record latest remote state for this release before evaluating diffs.
+        entry = {"updated_at": release_info["updated_at"]}
+        if remote_max is not None:
+            entry["max_year_file"] = remote_max
+        metadata["releases"][tag] = entry
+
+        if cfg["year_partitioned"] and cfg["asset_pattern"]:
             stored_max = stored.get("max_year_file")
 
             # Also check what the DB has
@@ -361,6 +368,9 @@ def check_updates():
         last_mod = http_head(src["url"])
         stored_mod = metadata.get("external", {}).get(name, {}).get("last_modified")
 
+        if last_mod:
+            metadata["external"][name] = {"last_modified": last_mod}
+
         if last_mod and stored_mod and last_mod != stored_mod:
             results["updated"].append({
                 "release": name,
@@ -377,24 +387,6 @@ def check_updates():
             })
         else:
             results["no_change"].append({"release": name})
-
-    # Update metadata with latest state
-    for tag, cfg in RELEASE_MAP.items():
-        release_info = get_release_info(tag)
-        if release_info:
-            entry = {"updated_at": release_info["updated_at"]}
-            if cfg["year_partitioned"] and cfg["asset_pattern"]:
-                max_year = extract_max_year(
-                    release_info["assets"], cfg["asset_pattern"]
-                )
-                if max_year:
-                    entry["max_year_file"] = max_year
-            metadata["releases"][tag] = entry
-
-    for name, src in EXTERNAL_SOURCES.items():
-        last_mod = http_head(src["url"])
-        if last_mod:
-            metadata["external"][name] = {"last_modified": last_mod}
 
     metadata["db_state"] = current_db
     save_metadata(metadata)
