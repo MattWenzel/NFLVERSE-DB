@@ -13,7 +13,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from config import DB_PATH, PBP_DB_PATH
+from config import DB_PATH, DEPTH_CHARTS_LEGACY_END, PBP_DB_PATH, YEAR_RANGE_START
 
 
 # ---------------------------------------------------------------------------
@@ -31,22 +31,6 @@ class TableConfig:
         self.fetch_fn = fetch_fn
         self.dedup_cols = dedup_cols  # subset columns for drop_duplicates
         self.drop_na_col = drop_na_col  # column to dropna on (e.g. "player_id")
-
-
-# First year of available data for each year-partitioned table.
-# Shared between build_db.py and build_db_nflreadpy.py so they stay in sync.
-YEAR_RANGE_START = {
-    "game_stats": 1999,
-    "season_stats": 1999,
-    "games": 1999,
-    "snap_counts": 2012,
-    "depth_charts": 2001,
-    "play_by_play": 1999,
-}
-
-# depth_charts schema changed in 2025 — pre-2025 lives in `depth_charts`,
-# 2025+ lives in `depth_charts_2025` (handled as full_replace).
-DEPTH_CHARTS_LEGACY_END = 2025  # exclusive upper bound for the old table
 
 
 def default_years_for(table_name):

@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlretrieve
 
-from config import RAW_DATA_PATH
+from config import RAW_DATA_PATH, YEAR_RANGE_START
 
 NFLVERSE_BASE = "https://github.com/nflverse/nflverse-data/releases/download"
 
@@ -34,12 +34,12 @@ DOWNLOAD_MAP = {
     "game_stats": {
         "tag": "stats_player",
         "pattern": "stats_player_week_{year}.parquet",
-        "years": (1999, CURRENT_YEAR),
+        "years": (YEAR_RANGE_START["game_stats"], CURRENT_YEAR),
     },
     "season_stats": {
         "tag": "stats_player",
         "pattern": "stats_player_reg_{year}.parquet",
-        "years": (1999, CURRENT_YEAR),
+        "years": (YEAR_RANGE_START["season_stats"], CURRENT_YEAR),
     },
     "games": {
         "tag": "schedules",
@@ -48,12 +48,12 @@ DOWNLOAD_MAP = {
     "snap_counts": {
         "tag": "snap_counts",
         "pattern": "snap_counts_{year}.parquet",
-        "years": (2012, CURRENT_YEAR),
+        "years": (YEAR_RANGE_START["snap_counts"], CURRENT_YEAR),
     },
     "depth_charts": {
         "tag": "depth_charts",
         "pattern": "depth_charts_{year}.parquet",
-        "years": (2001, CURRENT_YEAR),
+        "years": (YEAR_RANGE_START["depth_charts"], CURRENT_YEAR),
     },
     # Single-file parquet from nflverse-data releases
     "players": {
@@ -90,7 +90,7 @@ DOWNLOAD_MAP = {
     "play_by_play": {
         "tag": "pbp",
         "pattern": "play_by_play_{year}.parquet",
-        "years": (1999, CURRENT_YEAR),
+        "years": (YEAR_RANGE_START["play_by_play"], CURRENT_YEAR),
     },
 }
 
