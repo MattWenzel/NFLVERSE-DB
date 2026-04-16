@@ -20,7 +20,7 @@ Comprehensive NFL player statistics database built from [nflverse](https://githu
 | **season_stats** | 49,489 | 113 | Aggregated season totals |
 | **draft_picks** | 12,670 | 36 | Historical NFL draft data + career stats |
 | **combine** | 8,649 | 18 | Scouting Combine results |
-| **snap_counts** | 276,948 | 16 | Weekly snap participation (2012-2025) |
+| **snap_counts** | 276,948 | 16 | Weekly snap participation (2015-2025) |
 | **ngs_stats** | 26,656 | 52 | Next Gen Stats (2016-2025) |
 | **depth_charts** | 869,185 | 15 | Weekly depth charts (2001-2024) |
 | **depth_charts_2025** | 476,501 | 12 | Daily depth charts (2025+, different schema) |
@@ -514,7 +514,7 @@ Contains ALL stat columns for ALL position groups — offensive, defensive, kick
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `game_id` | TEXT | nflverse game ID (only populated 2002+) |
+| `game_id` | TEXT | nflverse game ID (only populated 2022+) |
 - `sack_yards_lost` (was `sack_yards`)
 
 **Indexes:**
@@ -776,7 +776,7 @@ Daily depth chart positions for 2025+ season. **Different schema from `depth_cha
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `dt` | TEXT | Date (YYYY-MM-DD) — no `season` column |
+| `dt` | TEXT | ISO 8601 timestamp (e.g. `2025-08-03T10:09:07Z`) — no `season` column |
 | `team` | TEXT | Team abbreviation |
 | `player_name` | TEXT | Player name |
 | `espn_id` | TEXT | ESPN player ID |
@@ -1285,7 +1285,7 @@ See [`../README.md`](../README.md) for the full command reference.
 - **Column naming**: All tables use nflverse-native column names — no custom renames applied during load.
 - **All position groups**: `game_stats`/`season_stats` include ~115 columns covering every position (offensive, defensive, kicking, special teams).
 - **`season_stats.recent_team`**: Backfilled from `game_stats.team` (most common team per player-season); nflverse source doesn't always populate it.
-- **`game_id` in `game_stats`**: Only populated for 2002+ (nflverse doesn't provide it for 1999-2001).
+- **`game_id` in `game_stats`**: Only populated for 2022+ (nflverse doesn't provide it for 1999-2021).
 - **`depth_charts` vs `depth_charts_2025`**: Separate tables due to nflverse schema change in 2025. The 2025+ format uses daily snapshots (`dt` column) instead of weekly, and has a different position structure.
 - **`combine` table**: Has no join edges to other tables — query separately.
 - **NGS `stat_type`**: `passing`, `rushing`, `receiving`; `week=0` = season totals.
