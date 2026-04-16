@@ -43,7 +43,7 @@ See [Incremental updates](#incremental-updates) for pulling new seasons without 
 
 **Core**: `players`, `player_ids`, `games`, `game_stats`, `season_stats`, `draft_picks`, `combine`
 
-**Supplementary**: `snap_counts` (2012+), `ngs_stats` (2016+), `depth_charts` (2001–2024), `depth_charts_2025` (2025+, different schema), `pfr_advanced` (2018+), `qbr` (2006–2023)
+**Supplementary**: `snap_counts` (2015+), `ngs_stats` (2016+), `depth_charts` (2001–2024), `depth_charts_2025` (2025+, different schema), `pfr_advanced` (2018+), `qbr` (2006–2023)
 
 **Play-by-play**: `play_by_play` in `pbp.db`.
 
@@ -137,11 +137,11 @@ Credit: [nflverse/nflreadpy](https://github.com/nflverse/nflreadpy) — the offi
 
 - `season_stats.recent_team` is backfilled from `game_stats.team` (most common team per player-season); nflverse source data doesn't populate it.
 - `depth_charts` (2001–2024) and `depth_charts_2025` (2025+) are separate tables because nflverse changed the schema in 2025.
-- `game_id` in `game_stats` is only populated for 2002+ (nflverse doesn't provide it for 1999–2001).
+- `game_id` in `game_stats` is only populated for 2022+ (nflverse doesn't provide it for 1999–2021).
 - Schema drift between years is handled automatically — missing columns are added via `ALTER TABLE` during load.
 - NGS `stat_type`: `passing` / `rushing` / `receiving`; `week=0` is season totals.
 - PFR `stat_type`: `pass` / `rush` / `rec` (different naming convention — watch out).
-- QBR `game_week` is INTEGER, `week_text` is TEXT (use `week_text = "Season Total"` for season totals); `season_type` is `"Regular"` or `"Postseason"`.
+- QBR is weekly-only (no season-total rows) — aggregate with `AVG(qbr_total)` grouped by player + season. `game_week` is INTEGER, `season_type` is `"Regular"` or `"Postseason"`.
 - `nfl-data-py` was archived in September 2025 — [`nflreadpy`](https://github.com/nflverse/nflreadpy) is the successor and what this project uses.
 
 ## License

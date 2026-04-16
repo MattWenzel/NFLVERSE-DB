@@ -897,7 +897,7 @@ Pro Football Reference advanced statistics. Contains three stat types with diffe
 
 ### Table: `qbr`
 
-ESPN Total QBR (Quarterback Rating) data. Includes weekly and season totals.
+ESPN Total QBR (Quarterback Rating) data. Weekly rows only — **no season-total rows**; aggregate with `AVG(qbr_total)` grouped by player + season.
 
 **Rows:** 9,570 | **Years:** 2006-2023 | **ID:** ESPN ID (`player_id`) | **Columns:** 30
 
@@ -907,7 +907,7 @@ ESPN Total QBR (Quarterback Rating) data. Includes weekly and season totals.
 | `season_type` | TEXT | "Regular" or "Postseason" |
 | `game_id` | INTEGER | ESPN game ID |
 | `game_week` | INTEGER | Week number |
-| `week_text` | TEXT | Week label (e.g., "Week 1", "Season Total") |
+| `week_text` | TEXT | Week label (e.g., "Week 1" … "Week 18", "Wild Card", "Divisional Round", "Conference Championship", "Super Bowl", "Pro Bowl") |
 | `team_abb` | TEXT | Team abbreviation |
 | `player_id` | INTEGER | **ESPN ID** |
 | `name_short` | TEXT | Short name (e.g., "P. Manning") |
@@ -1142,19 +1142,23 @@ ORDER BY sc.week;
 
 ### Get QBR with player info
 
+QBR has no season-total rows — aggregate the weekly rows:
+
 ```sql
 SELECT
     p.display_name,
     p.latest_team,
-    q.qbr_total,
-    q.pts_added,
-    q.qb_plays
+    AVG(q.qbr_total) AS qbr_total,
+    SUM(q.pts_added) AS pts_added,
+    SUM(q.qb_plays) AS qb_plays
 FROM qbr q
 JOIN player_ids pi ON q.player_id = pi.espn_id
 JOIN players p ON pi.gsis_id = p.gsis_id
 WHERE q.season = 2023
-  AND q.week_text = 'Season Total'
-ORDER BY q.qbr_total DESC
+  AND q.season_type = 'Regular'
+  AND q.qualified = 1
+GROUP BY p.gsis_id, p.display_name, p.latest_team
+ORDER BY qbr_total DESC
 LIMIT 10;
 ```
 
@@ -1290,7 +1294,7 @@ See [`../README.md`](../README.md) for the full command reference.
 - **`combine` table**: Has no join edges to other tables — query separately.
 - **NGS `stat_type`**: `passing`, `rushing`, `receiving`; `week=0` = season totals.
 - **PFR `stat_type`**: `pass`, `rush`, `rec` (different naming from NGS!).
-- **QBR**: `season_type` is `"Regular"` or `"Postseason"`; use `week_text` for "Season Total" filtering.
+- **QBR**: `season_type` is `"Regular"` or `"Postseason"`. No season-total rows exist — aggregate weekly rows with `AVG(qbr_total)` grouped by player + season. Filter `qualified = 1` (ESPN's qualifying threshold) or `qb_plays >= 200` for starter-level samples.
 - **Schema drift**: Handled automatically by the build scripts, which add missing columns via `ALTER TABLE`.
 - **Join path**: `game_stats.player_id = players.gsis_id` (same GSIS format, different column names).
 - **`nfl_data_py`**: Archived Sept 2025. Successor is `nflreadpy`.
