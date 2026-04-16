@@ -7,13 +7,6 @@ data/*.db.bak
 data/*.db-shm
 data/*.db-wal
 
-# Legacy databases
-legacy/*.db
-legacy/*.db.bak
-
-# Keep the pre-built legacy snapshot
-!legacy/nflverse_custom.db.zip
-
 # Raw data files (downloaded from GitHub, rebuild locally)
 data/raw/
 
