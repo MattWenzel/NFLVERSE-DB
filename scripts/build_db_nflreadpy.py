@@ -178,7 +178,7 @@ def main():
         print("Running update check first...\n")
         import check_updates
         results, _ = check_updates.check_updates()
-        check_updates.print_report(results, {})
+        check_updates.print_report(results)
         print("\n" + "=" * 50 + "\n")
 
     run(TABLE_CONFIGS, args, title="nflverse DB Build (source: nflreadpy)")

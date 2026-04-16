@@ -402,7 +402,7 @@ def check_updates():
     return results, current_db
 
 
-def print_report(results, db_state):
+def print_report(results):
     """Print human-readable update report."""
     today = datetime.now().strftime("%Y-%m-%d")
     print(f"=== nflverse Update Check ({today}) ===\n")
@@ -495,7 +495,7 @@ def main():
         }
         print(json.dumps(output, indent=2))
     else:
-        print_report(results, db_state)
+        print_report(results)
 
 
 if __name__ == "__main__":
