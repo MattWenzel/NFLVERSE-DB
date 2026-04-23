@@ -117,7 +117,10 @@ def _fetch_players(_years=None):
     child FKs exist (which DuckDB can't do cleanly).
 
     Output covers:
-    - every row in nflverse's players.parquet
+    - every row in nflverse's players.parquet (including historical pre-GSIS
+      records with non-standard IDs like 'YOU597411' / 'VIT276861' — these
+      are real players that just predate the GSIS ID system, so we accept
+      any non-junk string, not just the GSIS regex).
     - plus a stub row for every bridge gsis_id missing from the primary source
     - with player_pfr_id / player_espn_id backfilled from the bridge where the
       primary source is NULL and the bridge value isn't already taken by a
@@ -129,7 +132,11 @@ def _fetch_players(_years=None):
         "pfr_id":   "player_pfr_id",
         "espn_id":  "player_espn_id",
     })
-    df["player_gsis_id"] = clean_gsis_id_series(df["player_gsis_id"])
+    # Loose cleanup (junk sentinels only) rather than strict GSIS regex — we
+    # want to preserve pre-GSIS-era player records. Child tables use the strict
+    # regex because they only ever carry modern-era IDs; any mismatch there is
+    # a real data error.
+    df["player_gsis_id"] = clean_id_series(df["player_gsis_id"])
     df["player_pfr_id"]  = clean_id_series(df["player_pfr_id"])
     df["player_espn_id"] = clean_id_series(df["player_espn_id"])
     df = df.dropna(subset=["player_gsis_id"]).drop_duplicates("player_gsis_id", keep="first")

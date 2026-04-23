@@ -56,7 +56,10 @@ def _fetch_players(_years=None):
         "pfr_id":   "player_pfr_id",
         "espn_id":  "player_espn_id",
     })
-    df["player_gsis_id"] = clean_gsis_id_series(df["player_gsis_id"])
+    # Loose cleanup for the players source — historical pre-GSIS IDs like
+    # 'YOU597411' are real records we want to keep. Child tables still use
+    # the strict regex.
+    df["player_gsis_id"] = clean_id_series(df["player_gsis_id"])
     df["player_pfr_id"]  = clean_id_series(df["player_pfr_id"])
     df["player_espn_id"] = clean_id_series(df["player_espn_id"])
     return df
