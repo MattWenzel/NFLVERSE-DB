@@ -205,6 +205,39 @@ Total: ~700-1000 stubs depending on season. Stubs have a valid ID in one of the 
 
 You can identify stubs if needed: they typically have NULL `status` and NULL `rookie_season` and NULL measurables. But the main point of stubs is to keep child FKs valid — they're not intended to be queried as primary records.
 
+### 4.5 Name-based GSIS recovery (`recover_gsis_by_name`)
+
+When a child row has NULL `player_gsis_id` but a populated name column (e.g. `'R.Rodgers'`, `'Marshall Faulk'`, `'S.Gregory'`), the build attempts to fill in the canonical GSIS by looking it up in `players` via `(last_name, first-token, active-that-season)`. Only fills when exactly one player matches — ambiguous cases stay NULL.
+
+Current coverage (per build):
+
+- **draft_picks**: ~7,100 recoveries per build. The empty-string `gsis_id` for pre-1995 picks (Marshall Faulk, Trent Dilfer, Willie McGinest, etc.) gets normalized to NULL by the cleanup, then recovered by matching `pfr_player_name` against `players.display_name` + `players.last_name`.
+- **depth_charts_2025**: ~1,050 recoveries. Many 2025 practice-squad entries ship with only ESPN ID + `player_name` and no GSIS; name-match fills them.
+- **game_stats**: ~3 per build (initials-format names like `'R.Rodgers 2018 SEA'` → Richard Rodgers).
+- **season_stats**: ~1 per build.
+
+The helper searches these name columns in order (first present wins): `player_name`, `player_display_name`, `pfr_player_name`, `full_name`, `player`. Handles both initials-format (`'S.Fernando'`) and full-name format (`'Marshall Faulk'`) via one regex.
+
+To extend recovery to a new child table, just ensure the fetched DataFrame has one of those name columns — the helper picks up the first match automatically. No TableConfig change needed.
+
+### 4.6 NULL-gsis rows are legitimate — don't drop them
+
+After `clean_gsis_id_series` normalizes junk (`''`, `'0'`, `'XX-*'`, non-regex-matching) to NULL, some rows will have NULL `player_gsis_id`. These fall into three categories:
+
+| Kind | Example | FK behavior |
+|------|---------|-------------|
+| Team-level stats | `game_stats` rows with `player_name = 'Team'` and only `penalties`/`penalty_yards` populated | Correctly no player — NULL is the right value |
+| Empty placeholder | `game_stats` rows with all NULLs except `(season, week, opponent_team)` | nflverse ships these; preserved for completeness |
+| Unattributed historical stats | Pre-2001 defensive tackle rows with junk gsis and no player name | Real stat data, unknown author |
+
+**Rule:** **never** set `drop_na_col='player_gsis_id'` on a child table. DuckDB's FK allows NULL; these rows contribute to aggregate queries (`SUM(def_tackles_solo) FROM game_stats WHERE season = 2000`) but won't join to `players`.
+
+Historical note: we once had `drop_na_col='player_gsis_id'` on `game_stats` and `season_stats`. Audit vs pre-FK backup showed it silently dropped ~22 game_stats rows of real defensive-tackle data (plus S.Fernando's 2000 season) in the 1999-2000 era, plus ~21/year of team-level penalty stats modern-era. Fix in commit `79caee3`: removed the `drop_na_col` on both configs, preserved every row.
+
+The only tables that keep `drop_na_col`:
+- `players`: `drop_na_col='player_gsis_id'` — the primary registry needs a key column; stubs with only PFR/ESPN come via separate enrichment, not the parquet load path.
+- `player_ids`: `drop_na_col='gsis_id'` — the bridge has no purpose without a GSIS.
+
 ---
 
 ## 5. Foreign keys — the 60-edge declaration
@@ -446,6 +479,28 @@ for t in ['players','player_ids','games','game_stats','season_stats','draft_pick
 "
 ```
 
+### 8.7 "check_integrity reports hundreds of orphans after a rebuild"
+
+**Cause:** The orphan query was written before NULL-gsis rows were allowed. `NOT EXISTS (SELECT 1 FROM players WHERE p.gsis_id = g.gsis_id)` evaluates to TRUE when `g.gsis_id` is NULL (because `NULL = anything` is NULL, and `NOT EXISTS` of an empty result is TRUE). So every NULL-gsis row gets flagged as an orphan even though the FK allows NULL.
+
+**Fix:** add `IS NOT NULL` guard to the orphan query. The current `check_integrity` in `pipeline.py` already has this; if you ever hand-write a similar check, remember to add it:
+```sql
+-- Wrong (counts NULL as orphan):
+WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.player_gsis_id = g.player_gsis_id)
+
+-- Right (only counts real FK violations):
+WHERE g.player_gsis_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM players p WHERE p.player_gsis_id = g.player_gsis_id)
+```
+
+### 8.8 "Aggregate stats are different from the last build"
+
+If `SELECT SUM(def_tackles_solo) FROM game_stats WHERE season = 2000` returns a different number than before, the most likely culprit is that some rows with real stats but junk or NULL `player_gsis_id` were either dropped (bad) or added (good — recovered from historical data).
+
+**Verify:** compare against a backup. For each year, compute totals on both and diff. If aggregates dropped, some stats are gone — investigate whether `drop_na_col` or a too-strict cleanup is filtering rows you should be keeping.
+
+Historical note (see commit `79caee3`): removing `drop_na_col` on `game_stats`/`season_stats` added back ~60 previously-dropped defensive-tackle events from 1999-2000. The tackle totals increased back to their pre-drop values.
+
 ---
 
 ## 9. Debugging playbook
@@ -556,9 +611,13 @@ If the INSERT succeeds, something's wrong with the FK declarations.
 
 8. **Stubs are cheap, orphans are expensive.** Adding ~1,000 minimal stub rows to `players` is negligible storage. Silently dropping 300 orphan rows from `combine` is real data loss.
 
-9. **Verify against a backup, not against your memory.** Row counts, famous-player spot checks, Mahomes-canary cross-join. If a build passes "0 orphans" but the players count dropped by 6,000, something is wrong — the orphan check alone isn't sufficient proof.
+9. **Verify against a backup, not against your memory.** Row counts, famous-player spot checks, Mahomes-canary cross-join, **aggregate parity** (`SUM(def_tackles_solo)` per year), and **categorize NULL-gsis rows** (team-level vs empty vs recoverable-by-name). A build passing "0 orphans" but dropping 22 rows of real defensive tackles or 6,000 historical players is still a regression — the orphan check alone isn't sufficient proof.
 
-10. **The `check_integrity` step runs every build.** If it reports warnings, investigate — don't tune them out.
+10. **The `check_integrity` step runs every build.** If it reports warnings, investigate — don't tune them out. But also make sure the check itself handles NULL correctly (see §8.7): a naive orphan query will false-alarm on every NULL-gsis row.
+
+11. **Recovery beats dropping.** When a row has enough metadata (a populated name column) to identify the player elsewhere, fill in the missing GSIS rather than leaving it NULL. `recover_gsis_by_name` in pipeline.py handles this automatically for child tables; most rebuilds recover ~8,000+ GSIS IDs that would otherwise remain NULL. See §4.5.
+
+12. **drop_na_col is dangerous for child tables.** It silently removes rows whose key column is NULL after cleanup. For parent tables (players, player_ids) it's fine — the table's purpose requires the key. For child tables with FK-permitted-NULL columns, it's data loss. See §4.6.
 
 ---
 
@@ -566,9 +625,10 @@ If the INSERT succeeds, something's wrong with the FK declarations.
 
 - **13 tables + 1 view** (`v_depth_charts`): see `DATABASE.md`.
 - **60 foreign keys**: every edge the consumer (NFL_AI_AGENT) asked for, 0 orphans.
-- **Full rebuild time**: ~2 minutes. `build_db.py --all` ≈ 50s, `build_db.py --pbp` ≈ 55s.
-- **File size**: ~750-800 MB DuckDB.
+- **Full rebuild time**: ~2 minutes. `build_db.py --all` ≈ 1m15s (includes recovery), `build_db.py --pbp` ≈ 52s.
+- **File size**: ~940 MB DuckDB.
 - **Players registry size**: ~25,000 rows (includes ~700 cross-referenced stubs beyond nflverse's primary parquet).
+- **Per-rebuild GSIS recoveries**: ~8,200 rows (7,100 draft_picks pre-1995 HoF picks + 1,050 depth_charts_2025 practice-squad + ~50 scattered). Without recovery, those rows would have NULL gsis; with it, they join to the correct `players` record.
 
 To rebuild from scratch (assumes parquets are already in `data/raw/`):
 ```bash

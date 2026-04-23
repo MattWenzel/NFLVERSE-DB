@@ -425,31 +425,41 @@ _NAME_RE = re.compile(r"^(\w+)\.?(.+)$")
 
 
 def recover_gsis_by_name(conn, df):
-    """For rows where `player_gsis_id` is NULL but `player_name` is populated
-    (e.g. 'S.Fernando' or 'R.Rodgers' — nflverse ships some old-era rows with
-    only an initials-format name and a junk/missing GSIS), try to fill in the
-    canonical GSIS by matching (last_name, first_initial) to the players table,
-    restricted to players active that season.
+    """For rows where `player_gsis_id` is NULL but a name column is populated,
+    try to fill in the canonical GSIS by matching (last_name, first_initial-or-name)
+    to the players table, restricted to players active that season.
 
-    Only fills when the lookup resolves to exactly one player — ambiguous
+    Searches these name columns in order (first present wins): player_name,
+    player_display_name, pfr_player_name, full_name, player. Handles both
+    initials-format ('S.Fernando') and full-name format ('Marshall Faulk').
+
+    Only fills when the lookup resolves to exactly one player. Ambiguous
     matches stay NULL. Mutates df in place. Returns the count recovered.
     """
-    if "player_gsis_id" not in df.columns or "player_name" not in df.columns:
+    if "player_gsis_id" not in df.columns:
         return 0
     if not _table_exists(conn, "players"):
         return 0
 
-    null_mask = df["player_gsis_id"].isna() & df["player_name"].notna() & (df["player_name"] != "Team")
+    name_col = None
+    for candidate in ("player_name", "player_display_name", "pfr_player_name", "full_name", "player"):
+        if candidate in df.columns:
+            name_col = candidate
+            break
+    if name_col is None:
+        return 0
+
+    null_mask = df["player_gsis_id"].isna() & df[name_col].notna() & (df[name_col] != "Team")
     if not null_mask.any():
         return 0
 
     recovered = 0
     for idx in df.index[null_mask]:
-        name = str(df.at[idx, "player_name"])
+        name = str(df.at[idx, name_col])
         m = _NAME_RE.match(name)
         if not m:
             continue
-        first_init, lastname = m.group(1), m.group(2).strip()
+        first_token, lastname = m.group(1), m.group(2).strip()
         season = None
         if "season" in df.columns:
             s = df.at[idx, "season"]
@@ -463,7 +473,7 @@ def recover_gsis_by_name(conn, df):
                    OR (rookie_season <= ? AND last_season >= ?))
               AND player_gsis_id IS NOT NULL
             """,
-            [lastname, f"{first_init}%", season, season, season],
+            [lastname, f"{first_token}%", season, season, season],
         ).fetchall()
         if len(rows) == 1:
             df.at[idx, "player_gsis_id"] = rows[0][0]
