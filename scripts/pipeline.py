@@ -8,6 +8,7 @@ used by both `build_db.py` (local parquet source) and `build_db_nflreadpy.py`
 """
 
 import argparse
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,49 @@ import duckdb
 import pandas as pd
 
 from config import DB_PATH, DEPTH_CHARTS_LEGACY_END, YEAR_RANGE_START
+
+
+# ---------------------------------------------------------------------------
+# ID-column cleanup helpers (nflverse carries empty-string and '0' sentinels
+# for "no ID" in some old data; GSIS columns sometimes carry 'XX-0000001' etc.
+# Normalize to NULL so downstream FK joins don't false-match).
+# ---------------------------------------------------------------------------
+
+_GSIS_RE = re.compile(r"^\d{2}-\d{7}$")
+
+
+def clean_id(v):
+    """Normalize obvious junk ID values to None. For PFR/ESPN/generic IDs."""
+    if v is None:
+        return None
+    if isinstance(v, float) and v != v:  # NaN
+        return None
+    s = str(v).strip()
+    if s in ("", "0", "None", "nan", "NaN", "<NA>"):
+        return None
+    return s
+
+
+def clean_gsis_id(v):
+    """GSIS IDs must look like '00-0033873'. Non-matching values → None."""
+    s = clean_id(v)
+    if s is None:
+        return None
+    return s if _GSIS_RE.fullmatch(s) else None
+
+
+def clean_id_series(s):
+    """Vectorized clean_id for a whole pandas Series. Much faster than .map()."""
+    out = s.astype("string").str.strip()
+    return out.replace(
+        {"": pd.NA, "0": pd.NA, "None": pd.NA, "nan": pd.NA, "NaN": pd.NA, "<NA>": pd.NA}
+    )
+
+
+def clean_gsis_id_series(s):
+    """Vectorized clean_gsis_id for a whole pandas Series."""
+    out = clean_id_series(s)
+    return out.where(out.str.match(r"^\d{2}-\d{7}$", na=False), other=pd.NA)
 
 
 def to_string_id(s):
@@ -32,15 +76,40 @@ def to_string_id(s):
 # ---------------------------------------------------------------------------
 
 class TableConfig:
-    """How to fetch and update a single table."""
+    """How to fetch and update a single table.
+
+    FK-related fields enable declarative primary/unique/foreign-key constraints
+    at CREATE TABLE time, plus per-table stubbing so FK targets exist before the
+    child INSERT fires. See scripts/build_db.py for concrete configs.
+    """
 
     def __init__(self, name, *, update_mode="year_partition",
-                 fetch_fn=None, dedup_cols=None, drop_na_col=None):
+                 fetch_fn=None, dedup_cols=None, drop_na_col=None,
+                 primary_key=None, unique_cols=None, foreign_keys=None,
+                 stub_source=None,
+                 parquet_glob=None, gsis_id_cols=None, id_cols=None,
+                 force_varchar_cols=None):
         self.name = name
-        self.update_mode = update_mode  # "year_partition" or "full_replace"
+        # update_mode:
+        #   "year_partition"         — DELETE WHERE season=Y, INSERT per year
+        #   "year_partition_upsert"  — per year, INSERT ON CONFLICT DO UPDATE (FK-parent tables)
+        #   "full_replace"           — DROP + CREATE AS SELECT
+        #   "upsert"                 — INSERT ON CONFLICT DO UPDATE (players)
+        #   "bulk_parquet"           — one-pass native parquet load via DuckDB; for huge tables (PBP)
+        self.update_mode = update_mode
         self.fetch_fn = fetch_fn
-        self.dedup_cols = dedup_cols  # subset columns for drop_duplicates
-        self.drop_na_col = drop_na_col  # column to dropna on (e.g. "player_id")
+        self.dedup_cols = dedup_cols
+        self.drop_na_col = drop_na_col
+        # FK metadata
+        self.primary_key = primary_key
+        self.unique_cols = unique_cols or []
+        self.foreign_keys = foreign_keys or []
+        self.stub_source = stub_source or {}
+        # bulk_parquet-mode config
+        self.parquet_glob = parquet_glob          # absolute path w/ glob wildcards
+        self.gsis_id_cols = gsis_id_cols or []    # SQL-side GSIS regex cleanup
+        self.id_cols = id_cols or []              # SQL-side empty/'0' → NULL cleanup
+        self.force_varchar_cols = force_varchar_cols or []  # force VARCHAR on drift-prone cols
 
 
 def default_years_for(table_name):
@@ -132,14 +201,345 @@ def _insert_df(conn, table_name, df):
         conn.unregister("_ingest_df")
 
 
-def _create_table_from_df(conn, table_name, df):
-    """Replace-or-create a table from a DataFrame."""
+def _create_table_from_df(conn, table_name, df, config=None):
+    """Replace-or-create a table from a DataFrame.
+
+    If `config` carries primary_key / unique_cols / foreign_keys metadata, the
+    table is created with an explicit DDL that includes those constraints.
+    Otherwise falls through to `CREATE TABLE AS SELECT`.
+    """
     conn.register("_ingest_df", df)
     try:
         conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
-        conn.execute(f'CREATE TABLE "{table_name}" AS SELECT * FROM _ingest_df')
+        if config and (config.primary_key or config.unique_cols or config.foreign_keys):
+            ddl = _build_create_ddl(conn, table_name, df, config)
+            conn.execute(ddl)
+            existing = _existing_columns(conn, table_name)
+            cols = [c for c in df.columns if c in existing]
+            col_list = ", ".join(f'"{c}"' for c in cols)
+            conn.execute(
+                f'INSERT INTO "{table_name}" ({col_list}) '
+                f'SELECT {col_list} FROM _ingest_df'
+            )
+        else:
+            conn.execute(f'CREATE TABLE "{table_name}" AS SELECT * FROM _ingest_df')
     finally:
         conn.unregister("_ingest_df")
+
+
+def _build_create_ddl(conn, table_name, df, config):
+    """Emit a CREATE TABLE statement with explicit columns + PK/UNIQUE/FK clauses.
+
+    Column types are inferred from the DataFrame via a DuckDB DESCRIBE on a
+    registered view of the df.
+    """
+    rows = conn.execute("DESCRIBE (SELECT * FROM _ingest_df)").fetchall()
+    col_defs = [f'"{row[0]}" {row[1]}' for row in rows]
+
+    # Treat `primary_key` as "unique column used as upsert target" — emit UNIQUE
+    # instead of PRIMARY KEY so stub rows that lack the ID (e.g. players stubbed
+    # from combine carry only player_pfr_id, not player_gsis_id) can coexist.
+    # DuckDB FKs accept either UNIQUE or PRIMARY KEY as the referenced target,
+    # so this doesn't break the outbound FK contract.
+    constraints = []
+    unique_emitted = set()
+    if config.primary_key:
+        constraints.append(f'UNIQUE ("{config.primary_key}")')
+        unique_emitted.add(config.primary_key)
+    for uc in config.unique_cols:
+        if uc not in unique_emitted:
+            constraints.append(f'UNIQUE ("{uc}")')
+            unique_emitted.add(uc)
+    for col, ref_table, ref_col in config.foreign_keys:
+        constraints.append(
+            f'FOREIGN KEY ("{col}") REFERENCES "{ref_table}" ("{ref_col}")'
+        )
+
+    body = ",\n    ".join(col_defs + constraints)
+    return f'CREATE TABLE "{table_name}" (\n    {body}\n)'
+
+
+def _upsert_df(conn, table_name, df, primary_key):
+    """Insert df rows into table_name, updating on conflict of primary_key.
+
+    Rows already in the target but not in df are kept. This is used for FK
+    parent tables (players, games) so children's FK references survive rebuilds.
+    """
+    conn.register("_ingest_df", df)
+    try:
+        existing_cols = _existing_columns(conn, table_name)
+        cols = [c for c in df.columns if c in existing_cols]
+        col_list = ", ".join(f'"{c}"' for c in cols)
+        update_set = ", ".join(
+            f'"{c}" = EXCLUDED."{c}"' for c in cols if c != primary_key
+        )
+        conn.execute(
+            f'INSERT INTO "{table_name}" ({col_list}) '
+            f'SELECT {col_list} FROM _ingest_df '
+            f'ON CONFLICT ("{primary_key}") DO UPDATE SET {update_set}'
+        )
+    finally:
+        conn.unregister("_ingest_df")
+
+
+def enrich_players_from_player_ids(conn):
+    """Use player_ids bridge to expand the players registry.
+
+    1. Insert stub players for any `player_ids.gsis_id` not in `players`.
+    2. Backfill missing `player_pfr_id` / `player_espn_id` on existing players
+       from the bridge.
+
+    Must run after both `players` and `player_ids` are loaded.
+    """
+    if not (_table_exists(conn, "players") and _table_exists(conn, "player_ids")):
+        return
+
+    added = conn.execute(
+        """
+        SELECT COUNT(*) FROM player_ids pi
+        WHERE pi.gsis_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM players p WHERE p.player_gsis_id = pi.gsis_id)
+        """
+    ).fetchone()[0]
+    if added:
+        conn.execute(
+            """
+            INSERT INTO players (
+                player_gsis_id, player_pfr_id, player_espn_id,
+                display_name, first_name, last_name, position, latest_team
+            )
+            SELECT DISTINCT ON (pi.gsis_id)
+                pi.gsis_id,
+                pi.pfr_id,
+                pi.espn_id,
+                pi.name,
+                split_part(pi.name, ' ', 1),
+                regexp_replace(pi.name, '^\\S+ ', ''),
+                pi.position,
+                pi.team
+            FROM player_ids pi
+            WHERE pi.gsis_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM players p WHERE p.player_gsis_id = pi.gsis_id)
+            ON CONFLICT (player_gsis_id) DO NOTHING
+            """
+        )
+    # Guard against UNIQUE violations: a bridge row sometimes carries an ID
+    # that's already assigned to a different player in `players`. Skip those.
+    conn.execute(
+        """
+        UPDATE players SET player_pfr_id = pi.pfr_id
+        FROM player_ids pi
+        WHERE players.player_gsis_id = pi.gsis_id
+          AND players.player_pfr_id IS NULL
+          AND pi.pfr_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM players p2
+              WHERE p2.player_pfr_id = pi.pfr_id
+                AND p2.player_gsis_id <> players.player_gsis_id
+          )
+        """
+    )
+    conn.execute(
+        """
+        UPDATE players SET player_espn_id = pi.espn_id
+        FROM player_ids pi
+        WHERE players.player_gsis_id = pi.gsis_id
+          AND players.player_espn_id IS NULL
+          AND pi.espn_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM players p2
+              WHERE p2.player_espn_id = pi.espn_id
+                AND p2.player_gsis_id <> players.player_gsis_id
+          )
+        """
+    )
+    if added:
+        print(f"    enriched players: +{added:,} stubs from player_ids bridge")
+
+
+def stub_players_from_child(conn, df, id_col, parent_col, meta_map):
+    """Insert minimal players rows for df[id_col] values missing from players[parent_col].
+
+    meta_map: {players_column: df_column_name}. E.g. {"display_name": "player_name"}.
+    Uses ANY_VALUE aggregation so each parent_col value contributes at most one
+    row, with metadata from some representative child row.
+    """
+    if id_col not in df.columns:
+        return 0
+    if not _table_exists(conn, "players"):
+        return 0
+
+    conn.register("_stub_src", df)
+    try:
+        # Build SELECT list: parent_col = any_value(id_col), metadata = any_value(src_col)
+        agg_cols = ", ".join(
+            f'any_value("{src}") AS "{dst}"' for dst, src in meta_map.items()
+        )
+        dst_cols = ", ".join(f'"{c}"' for c in meta_map.keys())
+        added = conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT "{id_col}") FROM _stub_src
+            WHERE "{id_col}" IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM players p WHERE p."{parent_col}" = _stub_src."{id_col}"
+              )
+            """
+        ).fetchone()[0]
+        if added:
+            conn.execute(
+                f"""
+                INSERT INTO players ("{parent_col}", {dst_cols})
+                SELECT "{id_col}" AS _pid, {agg_cols}
+                FROM _stub_src
+                WHERE "{id_col}" IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM players p WHERE p."{parent_col}" = _stub_src."{id_col}"
+                  )
+                GROUP BY "{id_col}"
+                ON CONFLICT ("{parent_col}") DO NOTHING
+                """
+            )
+        return added
+    finally:
+        conn.unregister("_stub_src")
+
+
+def stub_players_for_config(conn, config, df):
+    """For each FK declared by the child config, call stub_players_from_child
+    using the stub_source[child_col] map if provided. Prints a summary line."""
+    total_stubs = 0
+    for col, ref_table, ref_col in config.foreign_keys:
+        if ref_table != "players":
+            continue
+        meta_map = config.stub_source.get(col)
+        if not meta_map:
+            continue
+        added = stub_players_from_child(conn, df, col, ref_col, meta_map)
+        if added:
+            print(f"    stubbed players from {config.name}.{col}: +{added:,} rows")
+            total_stubs += added
+    return total_stubs
+
+
+def bulk_load_from_parquet_glob(
+    conn, table_name, parquet_glob, config,
+    id_clean_cols=None, gsis_clean_cols=None,
+    force_varchar_cols=None, stub_source=None,
+):
+    """Single-pass native-parquet load for very large tables (PBP).
+
+    Reads every parquet in `parquet_glob` via DuckDB's multi-threaded
+    `read_parquet`, scrubs junk IDs in SQL, stubs missing parents via a
+    single UNION ALL, then creates the final FK-bearing table. Much faster
+    and more schema-drift-robust than year-by-year pandas-based loading.
+
+    Args:
+        id_clean_cols: columns to normalize with clean_id semantics (empty/'0' → NULL).
+        gsis_clean_cols: columns that must match the GSIS regex or become NULL.
+        force_varchar_cols: columns to coerce to VARCHAR (handle DuckDB type drift).
+        stub_source: {child_col: {player_col: source_col}} — same shape as
+                     TableConfig.stub_source.
+    """
+    id_clean_cols = id_clean_cols or []
+    gsis_clean_cols = gsis_clean_cols or []
+    force_varchar_cols = force_varchar_cols or []
+    stub_source = stub_source or {}
+    stage = f"_{table_name}_stage"
+
+    # 1. Stage raw data from the parquet glob. union_by_name lets schema drift
+    #    across years resolve cleanly (NULLs for missing columns).
+    conn.execute(f'DROP TABLE IF EXISTS "{stage}"')
+    conn.execute(
+        f'CREATE TEMP TABLE "{stage}" AS '
+        f"SELECT * FROM read_parquet('{parquet_glob}', union_by_name=true)"
+    )
+    total = conn.execute(f'SELECT COUNT(*) FROM "{stage}"').fetchone()[0]
+    print(f"    staged {total:,} rows from {parquet_glob}")
+
+    # 2. Force VARCHAR on type-drift columns (time/date fields that can be all
+    #    NULL in early years). Skip any that aren't already VARCHAR-compatible.
+    for col in force_varchar_cols:
+        try:
+            conn.execute(
+                f'ALTER TABLE "{stage}" ALTER "{col}" SET DATA TYPE VARCHAR '
+                f'USING CAST("{col}" AS VARCHAR)'
+            )
+        except duckdb.Error:
+            pass  # column may not exist in this dataset
+
+    # 3. Junk-ID cleanup in a single UPDATE with per-column CASE WHEN.
+    stage_cols = _existing_columns(conn, stage)
+    set_clauses = []
+    for col in gsis_clean_cols:
+        if col in stage_cols:
+            set_clauses.append(
+                f'"{col}" = CASE WHEN "{col}" IS NOT NULL '
+                f'AND regexp_matches("{col}", \'^[0-9]{{2}}-[0-9]{{7}}$\') '
+                f'THEN "{col}" END'
+            )
+    for col in id_clean_cols:
+        if col in stage_cols:
+            set_clauses.append(
+                f'"{col}" = CASE WHEN "{col}" IN (\'\', \'0\', \'None\', \'nan\', \'NaN\') '
+                f'THEN NULL ELSE "{col}" END'
+            )
+    if set_clauses:
+        conn.execute(f'UPDATE "{stage}" SET {", ".join(set_clauses)}')
+
+    # 4. Stub missing FK-target player rows in ONE pass using UNION ALL of all
+    #    role columns. Each tuple contributes (player_id, representative_name).
+    if stub_source:
+        stub_selects = []
+        for col, meta in stub_source.items():
+            if col not in stage_cols:
+                continue
+            name_col = meta.get("display_name")
+            if name_col and name_col in stage_cols:
+                stub_selects.append(
+                    f'SELECT "{col}" AS _pid, "{name_col}" AS _nm FROM "{stage}"'
+                )
+            else:
+                stub_selects.append(
+                    f'SELECT "{col}" AS _pid, NULL::VARCHAR AS _nm FROM "{stage}"'
+                )
+        if stub_selects:
+            union_sql = "\nUNION ALL\n".join(stub_selects)
+            before = conn.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+            conn.execute(
+                f"""
+                INSERT INTO players (player_gsis_id, display_name)
+                SELECT _pid, any_value(_nm)
+                FROM ({union_sql}) u
+                WHERE u._pid IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM players p WHERE p.player_gsis_id = u._pid
+                  )
+                GROUP BY _pid
+                ON CONFLICT (player_gsis_id) DO NOTHING
+                """
+            )
+            after = conn.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+            print(f"    stubbed players from {table_name}: +{after - before:,} rows")
+
+    # 5. Build final DDL from staging schema + FK clauses, then CREATE + INSERT.
+    describe = conn.execute(f'DESCRIBE "{stage}"').fetchall()
+    col_defs = [f'"{r[0]}" {r[1]}' for r in describe]
+    constraints = []
+    if config.primary_key:
+        constraints.append(f'UNIQUE ("{config.primary_key}")')
+    for uc in config.unique_cols:
+        constraints.append(f'UNIQUE ("{uc}")')
+    for col, ref_table, ref_col in config.foreign_keys:
+        if col in stage_cols:
+            constraints.append(
+                f'FOREIGN KEY ("{col}") REFERENCES "{ref_table}" ("{ref_col}")'
+            )
+    body = ",\n    ".join(col_defs + constraints)
+    conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+    conn.execute(f'CREATE TABLE "{table_name}" (\n    {body}\n)')
+    conn.execute(f'INSERT INTO "{table_name}" SELECT * FROM "{stage}"')
+    conn.execute(f'DROP TABLE "{stage}"')
+    print(f"    {total:,} rows loaded into {table_name}")
 
 
 # ---------------------------------------------------------------------------
@@ -192,10 +592,14 @@ def update_year_partition(conn, config, years, dry_run=False):
             if dedup_available:
                 df = df.drop_duplicates(subset=dedup_available, keep="first")
 
+        # If this table has FK parents pointing at players, pre-stub any
+        # missing parent rows from the child's own metadata before INSERT.
+        stub_players_for_config(conn, config, df)
+
         if not _table_exists(conn, config.name):
             try:
                 conn.begin()
-                _create_table_from_df(conn, config.name, df)
+                _create_table_from_df(conn, config.name, df, config=config)
                 conn.commit()
                 print(f"{len(df):,} rows inserted (table created)")
             except Exception as e:
@@ -206,10 +610,15 @@ def update_year_partition(conn, config, years, dry_run=False):
         try:
             conn.begin()
             _add_missing_columns(conn, config.name, df)
-            conn.execute(
-                f'DELETE FROM "{config.name}" WHERE season = ?', [year]
-            )
-            _insert_df(conn, config.name, df)
+            if config.update_mode == "year_partition_upsert" and config.primary_key:
+                # FK-parent tables (e.g. games) can't DELETE rows while children
+                # reference them; upsert by primary key instead.
+                _upsert_df(conn, config.name, df, config.primary_key)
+            else:
+                conn.execute(
+                    f'DELETE FROM "{config.name}" WHERE season = ?', [year]
+                )
+                _insert_df(conn, config.name, df)
             conn.commit()
             print(f"{len(df):,} rows inserted")
         except Exception as e:
@@ -249,9 +658,18 @@ def update_full_replace(conn, config, dry_run=False):
         if dedup_available:
             df = df.drop_duplicates(subset=dedup_available, keep="first")
 
+    # Stub any missing FK-parent rows from this child's own metadata.
+    stub_players_for_config(conn, config, df)
+
     try:
         conn.begin()
-        _create_table_from_df(conn, config.name, df)
+        if config.update_mode == "upsert" and _table_exists(conn, config.name) and config.primary_key:
+            # FK-parent table (players): can't DROP while children reference it.
+            # Upsert by primary key; rows absent from the new source are retained.
+            _add_missing_columns(conn, config.name, df)
+            _upsert_df(conn, config.name, df, config.primary_key)
+        else:
+            _create_table_from_df(conn, config.name, df, config=config)
         conn.commit()
         print(f"{len(df):,} rows")
     except Exception as e:
@@ -537,16 +955,33 @@ def run(table_configs, args, title="nflverse DB"):
             cfg = table_configs[name]
 
             print(f"Processing {name}:")
-            if cfg.update_mode == "year_partition":
+            if cfg.update_mode in ("year_partition", "year_partition_upsert"):
                 yr_list = years if years else default_years_for(name)
                 update_year_partition(conn, cfg, yr_list, dry_run=args.dry_run)
                 if name == "season_stats":
                     updated_season_stats = True
                 elif name == "game_stats":
                     updated_game_stats = True
-            elif cfg.update_mode == "full_replace":
+            elif cfg.update_mode in ("full_replace", "upsert"):
                 update_full_replace(conn, cfg, dry_run=args.dry_run)
+            elif cfg.update_mode == "bulk_parquet":
+                if args.dry_run:
+                    print(f"  {cfg.name}: would bulk-load from {cfg.parquet_glob}")
+                else:
+                    bulk_load_from_parquet_glob(
+                        conn, cfg.name, cfg.parquet_glob, cfg,
+                        id_clean_cols=cfg.id_cols,
+                        gsis_clean_cols=cfg.gsis_id_cols,
+                        force_varchar_cols=cfg.force_varchar_cols,
+                        stub_source=cfg.stub_source,
+                    )
             print()
+
+            # Child-table INSERTs may need to stub missing parents on-the-fly
+            # (e.g. a 2025 snap_counts row whose PFR id isn't in players yet).
+            # That happens inside each update_* function via stub_players_for_config.
+            # Players-level enrichment from player_ids is handled in
+            # _fetch_players at the pandas layer, so no SQL UPDATE is needed here.
 
         if updated_season_stats and updated_game_stats:
             backfill_season_stats_team(conn, years=years, dry_run=args.dry_run)

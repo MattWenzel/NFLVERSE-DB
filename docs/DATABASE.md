@@ -1117,6 +1117,57 @@ Only three explicit indexes are created — DuckDB's columnar storage handles mo
 
 ---
 
+## Foreign Keys
+
+The build declares **60 foreign-key constraints** at table-creation time so consumers can auto-derive join graphs from DuckDB's metadata instead of hand-maintaining a JOIN_EDGES dict.
+
+**Query the declared FKs:**
+```sql
+SELECT
+  table_name,
+  constraint_column_names[1] AS column_name,
+  referenced_table,
+  referenced_column_names[1] AS referenced_column
+FROM duckdb_constraints()
+WHERE constraint_type = 'FOREIGN KEY'
+ORDER BY table_name, column_name;
+```
+
+(Note: DuckDB's `information_schema.constraint_column_usage` view reports the child table as the `ref_table` — a known DuckDB limitation. Use `duckdb_constraints()` for correct referenced-table/column.)
+
+### Declared edges
+
+All player-level tables reference `players`; `game_stats` and `play_by_play` additionally reference `games`:
+
+| Child table | Child column(s) | Parent |
+|-------------|-----------------|--------|
+| `player_ids` | `gsis_id` | `players.player_gsis_id` |
+| `game_stats` | `player_gsis_id`, `game_id` | `players.player_gsis_id`, `games.game_id` |
+| `season_stats` | `player_gsis_id` | `players.player_gsis_id` |
+| `ngs_stats` | `player_gsis_id` | `players.player_gsis_id` |
+| `depth_charts` | `player_gsis_id` | `players.player_gsis_id` |
+| `depth_charts_2025` | `player_gsis_id`, `player_espn_id` | `players.player_gsis_id`, `players.player_espn_id` |
+| `draft_picks` | `player_gsis_id`, `player_pfr_id` | `players.player_gsis_id`, `players.player_pfr_id` |
+| `combine` | `player_pfr_id` | `players.player_pfr_id` |
+| `snap_counts` | `player_pfr_id` | `players.player_pfr_id` |
+| `pfr_advanced` | `player_pfr_id` | `players.player_pfr_id` |
+| `qbr` | `player_espn_id` | `players.player_espn_id` |
+| `play_by_play` | `game_id` + 46 `*_player_id` role columns | `games.game_id` + `players.player_gsis_id` |
+
+### How the build keeps FKs clean
+
+Two concerns had to be engineered around:
+
+1. **Junk-ID sentinels** (nflverse ships `''`, `'0'`, `'XX-0000001'` as "no ID" placeholders for pre-2001 data). The build normalizes these to NULL in `scripts/pipeline.py:clean_gsis_id_series` / `clean_id_series`. Rows are kept; only the bad-reference column is nulled, so the FK admits them as "unknown" without dropping data.
+
+2. **Real players outside the `players` registry** (combine-only college players, 2025 practice squad, ESPN-only fringe players, recent rookies not yet in nflverse's `players.parquet`). The build enriches `players` from two sources before any FK-bearing child INSERT fires:
+   - `_fetch_players` in `scripts/build_db.py` merges `players.parquet` with the `player_ids` bridge table at the pandas layer — this seeds ~330 stub rows and backfills missing PFR/ESPN IDs on existing players.
+   - For each child table that declares a FK, `stub_players_for_config` / `bulk_load_from_parquet_glob` in `scripts/pipeline.py` extracts any reference IDs not already in `players` and seeds minimal stub rows from the child's own metadata (name + position + team + school, whichever the child carries).
+
+Result: every row is preserved and every FK target exists. Total players table grows ~3-4K rows beyond nflverse's source parquet to cover all cross-referenced IDs.
+
+---
+
 ## Example Queries
 
 ### Get a player's career stats

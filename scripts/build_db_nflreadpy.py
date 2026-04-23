@@ -29,7 +29,18 @@ Usage:
 import nflreadpy
 import pandas as pd
 
-from pipeline import TableConfig, build_arg_parser, run, to_string_id
+# Re-use the canonical TABLE_CONFIGS from build_db.py so FK metadata, stub_source
+# maps, and ordering stay in sync across both build paths. Only the fetch_fns
+# differ (they pull from nflreadpy instead of local parquet).
+from build_db import TABLE_CONFIGS as _LOCAL_CONFIGS, PBP_PLAYER_ID_COLS
+from pipeline import (
+    TableConfig,
+    build_arg_parser,
+    clean_gsis_id_series,
+    clean_id_series,
+    run,
+    to_string_id,
+)
 
 
 def _polars_to_pandas(df):
@@ -38,74 +49,63 @@ def _polars_to_pandas(df):
     return df
 
 
-def _fetch_game_stats(years):
-    df = _polars_to_pandas(nflreadpy.load_player_stats(years, summary_level="week"))
-    return df.rename(columns={"player_id": "player_gsis_id"})
-
-
-def _fetch_season_stats(years):
-    df = _polars_to_pandas(nflreadpy.load_player_stats(years, summary_level="reg"))
-    return df.rename(columns={"player_id": "player_gsis_id"})
-
-
-def _fetch_games(years):
-    return _polars_to_pandas(nflreadpy.load_schedules(years))
-
-
 def _fetch_players(_years=None):
     df = _polars_to_pandas(nflreadpy.load_players())
-    return df.rename(columns={
+    df = df.rename(columns={
         "gsis_id":  "player_gsis_id",
         "pfr_id":   "player_pfr_id",
         "espn_id":  "player_espn_id",
     })
+    df["player_gsis_id"] = clean_gsis_id_series(df["player_gsis_id"])
+    df["player_pfr_id"]  = clean_id_series(df["player_pfr_id"])
+    df["player_espn_id"] = clean_id_series(df["player_espn_id"])
+    return df
 
 
 def _fetch_player_ids(_years=None):
     df = _polars_to_pandas(nflreadpy.load_ff_playerids())
     if "espn_id" in df.columns:
         df["espn_id"] = to_string_id(df["espn_id"])
+    if "gsis_id" in df.columns:
+        df["gsis_id"] = clean_gsis_id_series(df["gsis_id"])
+    if "pfr_id" in df.columns:
+        df["pfr_id"] = clean_id_series(df["pfr_id"])
+    if "espn_id" in df.columns:
+        df["espn_id"] = clean_id_series(df["espn_id"])
+    return df
+
+
+def _fetch_games(years):
+    df = _polars_to_pandas(nflreadpy.load_schedules(years))
+    if "game_id" in df.columns:
+        df["game_id"] = clean_id_series(df["game_id"])
+    return df
+
+
+def _fetch_combine(_years=None):
+    df = _polars_to_pandas(nflreadpy.load_combine())
+    df = df.rename(columns={"pfr_id": "player_pfr_id"})
+    df["player_pfr_id"] = clean_id_series(df["player_pfr_id"])
     return df
 
 
 def _fetch_draft_picks(_years=None):
     df = _polars_to_pandas(nflreadpy.load_draft_picks())
-    return df.rename(columns={
+    df = df.rename(columns={
         "gsis_id":       "player_gsis_id",
         "pfr_player_id": "player_pfr_id",
     })
-
-
-def _fetch_combine(_years=None):
-    df = _polars_to_pandas(nflreadpy.load_combine())
-    return df.rename(columns={"pfr_id": "player_pfr_id"})
+    df["player_gsis_id"] = clean_gsis_id_series(df["player_gsis_id"])
+    df["player_pfr_id"]  = clean_id_series(df["player_pfr_id"])
+    return df
 
 
 def _fetch_snap_counts(years):
     df = _polars_to_pandas(nflreadpy.load_snap_counts(years))
-    return df.rename(columns={"pfr_player_id": "player_pfr_id"})
-
-
-def _fetch_depth_charts(years):
-    df = _polars_to_pandas(nflreadpy.load_depth_charts(years))
-    return df.rename(columns={"gsis_id": "player_gsis_id"})
-
-
-def _fetch_depth_charts_2025(_years=None):
-    df = _polars_to_pandas(nflreadpy.load_depth_charts([2025]))
-    return df.rename(columns={"gsis_id": "player_gsis_id", "espn_id": "player_espn_id"})
-
-
-def _fetch_ngs_stats(_years=None):
-    # ngs_stats already ships player_gsis_id upstream — no rename needed.
-    all_data = []
-    for stat_type in ["passing", "rushing", "receiving"]:
-        df = _polars_to_pandas(
-            nflreadpy.load_nextgen_stats(seasons=True, stat_type=stat_type)
-        )
-        df["stat_type"] = stat_type
-        all_data.append(df)
-    return pd.concat(all_data, ignore_index=True)
+    df = df.rename(columns={"pfr_player_id": "player_pfr_id"})
+    if "player_pfr_id" in df.columns:
+        df["player_pfr_id"] = clean_id_series(df["player_pfr_id"])
+    return df
 
 
 def _fetch_pfr_advanced(_years=None):
@@ -119,7 +119,39 @@ def _fetch_pfr_advanced(_years=None):
         df["stat_type"] = stat_type
         all_data.append(df)
     combined = pd.concat(all_data, ignore_index=True)
-    return combined.rename(columns={"pfr_id": "player_pfr_id"})
+    combined = combined.rename(columns={"pfr_id": "player_pfr_id"})
+    combined["player_pfr_id"] = clean_id_series(combined["player_pfr_id"])
+    return combined
+
+
+def _fetch_depth_charts(years):
+    df = _polars_to_pandas(nflreadpy.load_depth_charts(years))
+    df = df.rename(columns={"gsis_id": "player_gsis_id"})
+    if "player_gsis_id" in df.columns:
+        df["player_gsis_id"] = clean_gsis_id_series(df["player_gsis_id"])
+    return df
+
+
+def _fetch_depth_charts_2025(_years=None):
+    df = _polars_to_pandas(nflreadpy.load_depth_charts([2025]))
+    df = df.rename(columns={"gsis_id": "player_gsis_id", "espn_id": "player_espn_id"})
+    df["player_gsis_id"] = clean_gsis_id_series(df["player_gsis_id"])
+    df["player_espn_id"] = clean_id_series(df["player_espn_id"])
+    return df
+
+
+def _fetch_ngs_stats(_years=None):
+    all_data = []
+    for stat_type in ["passing", "rushing", "receiving"]:
+        df = _polars_to_pandas(
+            nflreadpy.load_nextgen_stats(seasons=True, stat_type=stat_type)
+        )
+        df["stat_type"] = stat_type
+        all_data.append(df)
+    combined = pd.concat(all_data, ignore_index=True)
+    if "player_gsis_id" in combined.columns:
+        combined["player_gsis_id"] = clean_gsis_id_series(combined["player_gsis_id"])
+    return combined
 
 
 def _fetch_qbr(_years=None):
@@ -128,60 +160,82 @@ def _fetch_qbr(_years=None):
     df = pd.read_csv(url)
     if "player_id" in df.columns:
         df["player_id"] = to_string_id(df["player_id"])
-    return df.rename(columns={"player_id": "player_espn_id"})
+    df = df.rename(columns={"player_id": "player_espn_id"})
+    if "player_espn_id" in df.columns:
+        df["player_espn_id"] = clean_id_series(df["player_espn_id"])
+    return df
+
+
+def _fetch_game_stats(years):
+    df = _polars_to_pandas(nflreadpy.load_player_stats(years, summary_level="week"))
+    df = df.rename(columns={"player_id": "player_gsis_id"})
+    if "player_gsis_id" in df.columns:
+        df["player_gsis_id"] = clean_gsis_id_series(df["player_gsis_id"])
+    if "game_id" in df.columns:
+        df["game_id"] = clean_id_series(df["game_id"])
+    return df
+
+
+def _fetch_season_stats(years):
+    df = _polars_to_pandas(nflreadpy.load_player_stats(years, summary_level="reg"))
+    df = df.rename(columns={"player_id": "player_gsis_id"})
+    if "player_gsis_id" in df.columns:
+        df["player_gsis_id"] = clean_gsis_id_series(df["player_gsis_id"])
+    return df
 
 
 def _fetch_pbp(years):
-    return _polars_to_pandas(nflreadpy.load_pbp(years))
+    df = _polars_to_pandas(nflreadpy.load_pbp(years))
+    if df.empty:
+        return df
+    for col in PBP_PLAYER_ID_COLS:
+        if col in df.columns:
+            df[col] = clean_gsis_id_series(df[col])
+    if "game_id" in df.columns:
+        df["game_id"] = clean_id_series(df["game_id"])
+    return df
+
+
+# Build TABLE_CONFIGS by cloning build_db.py's configs and swapping in the
+# nflreadpy fetch functions. Keeps FK metadata, stub_source, ordering identical.
+_FETCH_OVERRIDES = {
+    "players":           _fetch_players,
+    "player_ids":        _fetch_player_ids,
+    "games":             _fetch_games,
+    "combine":           _fetch_combine,
+    "draft_picks":       _fetch_draft_picks,
+    "snap_counts":       _fetch_snap_counts,
+    "pfr_advanced":      _fetch_pfr_advanced,
+    "depth_charts":      _fetch_depth_charts,
+    "depth_charts_2025": _fetch_depth_charts_2025,
+    "ngs_stats":         _fetch_ngs_stats,
+    "qbr":               _fetch_qbr,
+    "game_stats":        _fetch_game_stats,
+    "season_stats":      _fetch_season_stats,
+    "play_by_play":      _fetch_pbp,
+}
+
+
+def _clone_with_fetch(cfg, fetch_fn):
+    # nflreadpy has no local parquet glob, so bulk_parquet mode doesn't apply;
+    # fall back to year_partition for PBP. Other FK metadata is preserved.
+    mode = "year_partition" if cfg.update_mode == "bulk_parquet" else cfg.update_mode
+    return TableConfig(
+        cfg.name,
+        update_mode=mode,
+        fetch_fn=fetch_fn,
+        dedup_cols=cfg.dedup_cols,
+        drop_na_col=cfg.drop_na_col,
+        primary_key=cfg.primary_key,
+        unique_cols=cfg.unique_cols,
+        foreign_keys=cfg.foreign_keys,
+        stub_source=cfg.stub_source,
+    )
 
 
 TABLE_CONFIGS = {
-    "game_stats": TableConfig(
-        "game_stats", update_mode="year_partition", fetch_fn=_fetch_game_stats,
-        dedup_cols=["player_gsis_id", "season", "week"], drop_na_col="player_gsis_id",
-    ),
-    "season_stats": TableConfig(
-        "season_stats", update_mode="year_partition", fetch_fn=_fetch_season_stats,
-        drop_na_col="player_gsis_id",
-    ),
-    "games": TableConfig(
-        "games", update_mode="year_partition", fetch_fn=_fetch_games,
-    ),
-    "players": TableConfig(
-        "players", update_mode="full_replace", fetch_fn=_fetch_players,
-        dedup_cols=["player_gsis_id"], drop_na_col="player_gsis_id",
-    ),
-    "player_ids": TableConfig(
-        "player_ids", update_mode="full_replace", fetch_fn=_fetch_player_ids,
-        dedup_cols=["gsis_id"], drop_na_col="gsis_id",  # bridge table — not renamed
-    ),
-    "draft_picks": TableConfig(
-        "draft_picks", update_mode="full_replace", fetch_fn=_fetch_draft_picks,
-    ),
-    "combine": TableConfig(
-        "combine", update_mode="full_replace", fetch_fn=_fetch_combine,
-    ),
-    "snap_counts": TableConfig(
-        "snap_counts", update_mode="year_partition", fetch_fn=_fetch_snap_counts,
-    ),
-    "depth_charts": TableConfig(
-        "depth_charts", update_mode="year_partition", fetch_fn=_fetch_depth_charts,
-    ),
-    "depth_charts_2025": TableConfig(
-        "depth_charts_2025", update_mode="full_replace", fetch_fn=_fetch_depth_charts_2025,
-    ),
-    "ngs_stats": TableConfig(
-        "ngs_stats", update_mode="full_replace", fetch_fn=_fetch_ngs_stats,
-    ),
-    "pfr_advanced": TableConfig(
-        "pfr_advanced", update_mode="full_replace", fetch_fn=_fetch_pfr_advanced,
-    ),
-    "qbr": TableConfig(
-        "qbr", update_mode="full_replace", fetch_fn=_fetch_qbr,
-    ),
-    "play_by_play": TableConfig(
-        "play_by_play", update_mode="year_partition", fetch_fn=_fetch_pbp,
-    ),
+    name: _clone_with_fetch(cfg, _FETCH_OVERRIDES[name])
+    for name, cfg in _LOCAL_CONFIGS.items()
 }
 
 

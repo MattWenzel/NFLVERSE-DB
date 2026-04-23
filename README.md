@@ -170,6 +170,9 @@ Per CC-BY-4.0 §3(a)(1)(B), these build scripts modify the source data in the fo
 - Schema drift across seasons is reconciled via `ALTER TABLE ADD COLUMN`; column set matches the union across all loaded years.
 - Player-ID columns on player-level tables are normalized to `player_gsis_id` / `player_pfr_id` / `player_espn_id` so cross-table joins don't require name translation. The `player_ids` bridge table keeps its short column names (`gsis_id`, `pfr_id`, `espn_id`, …) because it exists to cross-reference all ID systems.
 - Two ID columns whose pandas-inferred types were lossy are coerced to `VARCHAR`: `qbr.player_espn_id` (was BIGINT) and `player_ids.espn_id` (was DOUBLE with null handling producing float artifacts).
+- Obvious junk ID sentinels (`''`, `'0'`, `'XX-0000001'` etc.) that nflverse uses as "no ID" placeholders for pre-2001 data are normalized to NULL. Rows are preserved; only the invalid reference column is cleared.
+- The `players` registry is enriched beyond nflverse's primary `players.parquet` to cover every ID referenced anywhere in the DB. Stub rows come from the `player_ids` bridge and from each child table's own metadata (name + position + team + school). This is what lets every declared foreign key resolve to an existing `players` row.
+- Sixty foreign-key constraints are declared at table-creation time. Consumers can auto-derive a join graph by querying `duckdb_constraints()` (see `docs/DATABASE.md`).
 
 Numeric stat values are not renamed, recalculated, or otherwise transformed — the data itself remains as nflverse publishes it.
 
