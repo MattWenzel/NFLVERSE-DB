@@ -31,7 +31,7 @@ Comprehensive NFL player statistics database built from [nflverse](https://githu
 
 | View | Unions | Purpose |
 |------|--------|---------|
-| **`v_depth_charts`** | `depth_charts` + `depth_charts_2025` | Cross-schema composite — query depth charts across the 2025 schema change with a single normalized column set. See the [`v_depth_charts` section](#view-v_depth_charts-composite-across-schemas) for the column map, caveats, and an example query. |
+| **`v_depth_charts`** | `depth_charts` + `depth_charts_2025` | Cross-schema composite — query depth charts across the 2025 schema change with a single column set. See the [`v_depth_charts` section](#view-v_depth_charts-composite-across-schemas) for the column map and era-specific data differences. |
 
 ---
 

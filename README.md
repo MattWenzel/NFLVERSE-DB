@@ -46,7 +46,7 @@ See [Incremental updates](#incremental-updates) for pulling new seasons without 
 
 `game_stats` and `season_stats` include all ~114 nflverse columns across every position group (offensive, defensive, kicking, special teams, penalties, advanced) — not just skill positions.
 
-**Cross-schema view**: `v_depth_charts` UNIONs `depth_charts` (2001–2024 weekly) and `depth_charts_2025` (2025+ daily) with normalized columns and a `source` tag, so a single query spans both sides of the 2025 schema change. See [`docs/DATABASE.md`](docs/DATABASE.md#view-v_depth_charts-composite-across-schemas) for the column mapping and caveats.
+**Cross-schema view**: `v_depth_charts` UNIONs `depth_charts` (2001–2024 weekly) and `depth_charts_2025` (2025+ daily) on the columns that are honestly shared across both eras, plus a `source` tag. One query spans both sides of the 2025 schema change. See [`docs/DATABASE.md`](docs/DATABASE.md#view-v_depth_charts-composite-across-schemas) for the column map and era-specific data differences.
 
 See [`docs/DATABASE.md`](docs/DATABASE.md) for the full schema reference.
 
