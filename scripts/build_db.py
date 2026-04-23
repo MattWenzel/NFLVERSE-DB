@@ -488,7 +488,11 @@ TABLE_CONFIGS = {
         update_mode="year_partition",
         fetch_fn=_fetch_game_stats,
         dedup_cols=["player_gsis_id", "season", "week"],
-        drop_na_col="player_gsis_id",
+        # Deliberately no drop_na_col: nflverse's 1999-2000 data contains a
+        # handful of rows with junk gsis_id ('0' / 'XX-*') that carry real
+        # defensive tackles. Cleanup nulls the bogus IDs; the stats stay.
+        # NULL gsis is permitted by the FK, so those rows don't join to
+        # `players` but still contribute to aggregate queries correctly.
         foreign_keys=[
             ("player_gsis_id", "players", "player_gsis_id"),
             ("game_id",        "games",   "game_id"),
@@ -504,7 +508,9 @@ TABLE_CONFIGS = {
         "season_stats",
         update_mode="year_partition",
         fetch_fn=_fetch_season_stats,
-        drop_na_col="player_gsis_id",
+        # Same as game_stats: keep NULL-gsis rows so S.Fernando's 2000
+        # 1-tackle + 1-assist season (which nflverse shipped with junk gsis
+        # 'XX-0000001') survives aggregate queries. FK allows NULL.
         foreign_keys=[("player_gsis_id", "players", "player_gsis_id")],
         stub_source={
             "player_gsis_id": {

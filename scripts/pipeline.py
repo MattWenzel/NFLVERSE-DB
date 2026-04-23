@@ -421,6 +421,56 @@ def stub_players_for_config(conn, config, df):
     return total_stubs
 
 
+_NAME_RE = re.compile(r"^(\w+)\.?(.+)$")
+
+
+def recover_gsis_by_name(conn, df):
+    """For rows where `player_gsis_id` is NULL but `player_name` is populated
+    (e.g. 'S.Fernando' or 'R.Rodgers' — nflverse ships some old-era rows with
+    only an initials-format name and a junk/missing GSIS), try to fill in the
+    canonical GSIS by matching (last_name, first_initial) to the players table,
+    restricted to players active that season.
+
+    Only fills when the lookup resolves to exactly one player — ambiguous
+    matches stay NULL. Mutates df in place. Returns the count recovered.
+    """
+    if "player_gsis_id" not in df.columns or "player_name" not in df.columns:
+        return 0
+    if not _table_exists(conn, "players"):
+        return 0
+
+    null_mask = df["player_gsis_id"].isna() & df["player_name"].notna() & (df["player_name"] != "Team")
+    if not null_mask.any():
+        return 0
+
+    recovered = 0
+    for idx in df.index[null_mask]:
+        name = str(df.at[idx, "player_name"])
+        m = _NAME_RE.match(name)
+        if not m:
+            continue
+        first_init, lastname = m.group(1), m.group(2).strip()
+        season = None
+        if "season" in df.columns:
+            s = df.at[idx, "season"]
+            if s is not None and not (isinstance(s, float) and s != s):
+                season = int(s)
+        rows = conn.execute(
+            """
+            SELECT player_gsis_id FROM players
+            WHERE last_name = ? AND display_name LIKE ?
+              AND (? IS NULL OR rookie_season IS NULL OR last_season IS NULL
+                   OR (rookie_season <= ? AND last_season >= ?))
+              AND player_gsis_id IS NOT NULL
+            """,
+            [lastname, f"{first_init}%", season, season, season],
+        ).fetchall()
+        if len(rows) == 1:
+            df.at[idx, "player_gsis_id"] = rows[0][0]
+            recovered += 1
+    return recovered
+
+
 def bulk_load_from_parquet_glob(
     conn, table_name, parquet_glob, config,
     id_clean_cols=None, gsis_clean_cols=None,
@@ -592,6 +642,12 @@ def update_year_partition(conn, config, years, dry_run=False):
             if dedup_available:
                 df = df.drop_duplicates(subset=dedup_available, keep="first")
 
+        # Try to recover NULL GSIS values via name-match against players
+        # (e.g. 'R.Rodgers' 2018 SEA → Richard Rodgers TE).
+        recovered = recover_gsis_by_name(conn, df)
+        if recovered:
+            print(f"    recovered {recovered} GSIS IDs via name-match ", end="", flush=True)
+
         # If this table has FK parents pointing at players, pre-stub any
         # missing parent rows from the child's own metadata before INSERT.
         stub_players_for_config(conn, config, df)
@@ -658,7 +714,11 @@ def update_full_replace(conn, config, dry_run=False):
         if dedup_available:
             df = df.drop_duplicates(subset=dedup_available, keep="first")
 
-    # Stub any missing FK-parent rows from this child's own metadata.
+    # Try to recover NULL GSIS via name-match, then stub any genuinely
+    # missing FK parents from this child's own metadata.
+    recovered = recover_gsis_by_name(conn, df)
+    if recovered:
+        print(f"    recovered {recovered} GSIS IDs via name-match ", end="", flush=True)
     stub_players_for_config(conn, config, df)
 
     try:
@@ -853,14 +913,19 @@ def check_integrity(conn, dry_run=False):
 
     print("  Checking referential integrity...", end=" ", flush=True)
 
+    # NULL player_gsis_id is legitimate (team-level rows, empty placeholders,
+    # unattributed pre-2001 stats) — those aren't orphans, the FK allows NULL.
+    # Only count rows with a non-NULL gsis that doesn't match a player.
     orphan_games = conn.execute("""
         SELECT COUNT(*) FROM game_stats g
-        WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.player_gsis_id = g.player_gsis_id)
+        WHERE g.player_gsis_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM players p WHERE p.player_gsis_id = g.player_gsis_id)
     """).fetchone()[0]
 
     orphan_seasons = conn.execute("""
         SELECT COUNT(*) FROM season_stats s
-        WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.player_gsis_id = s.player_gsis_id)
+        WHERE s.player_gsis_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM players p WHERE p.player_gsis_id = s.player_gsis_id)
     """).fetchone()[0]
 
     if orphan_games or orphan_seasons:
