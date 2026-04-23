@@ -341,16 +341,19 @@ def create_views(conn):
 
     print("  Creating views...", end=" ", flush=True)
     conn.execute("DROP VIEW IF EXISTS v_depth_charts")
+    # Deliberately excludes `week` and `position` — the legacy table has them
+    # and the 2025 table doesn't, and there's no way to honestly synthesize
+    # them on the 2025 side (week has no meaning in a daily grain; position
+    # would just duplicate pos_abb). Consumers wanting week-scoped or general-
+    # position data query `depth_charts` or `depth_charts_2025` directly.
     conn.execute("""
         CREATE VIEW v_depth_charts AS
         SELECT
             season,
-            CAST(week AS INTEGER)                     AS week,
             NULL::VARCHAR                             AS dt,
             club_code                                 AS team,
             player_gsis_id,
             NULL::VARCHAR                             AS player_espn_id,
-            position,
             depth_position                            AS pos_abb,
             TRY_CAST(depth_team AS INTEGER)           AS depth_rank,
             formation,
@@ -360,12 +363,10 @@ def create_views(conn):
         UNION ALL
         SELECT
             CAST(strftime(CAST(dt AS TIMESTAMP), '%Y') AS INTEGER) AS season,
-            NULL::INTEGER                             AS week,
             dt,
             team,
             player_gsis_id,
             player_espn_id,
-            pos_abb                                   AS position,
             pos_abb,
             pos_rank                                  AS depth_rank,
             CASE
