@@ -14,14 +14,14 @@ Usage:
 import argparse
 import json
 import re
-import sqlite3
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from config import DB_PATH, METADATA_PATH, PBP_DB_PATH
+import duckdb
+
+from config import DB_PATH, METADATA_PATH
 
 GITHUB_API = "https://api.github.com"
 NFLVERSE_REPO = "nflverse/nflverse-data"
@@ -147,30 +147,47 @@ def extract_max_year(assets, pattern):
 
 
 def scan_db_state(db_path, tables):
-    """Scan a SQLite DB for row counts and max season per table."""
+    """Scan a DuckDB database for row counts and max season per table."""
     state = {}
     if not db_path.exists():
         return state
 
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
+    conn = duckdb.connect(str(db_path), read_only=True)
+
+    existing_tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main'"
+        ).fetchall()
+    }
 
     for table in tables:
-        try:
-            cur.execute(f"SELECT COUNT(*) FROM [{table}]")
-            row_count = cur.fetchone()[0]
+        if table not in existing_tables:
+            state[table] = {"row_count": 0, "max_season": None}
+            continue
 
-            # Try to get max season
+        try:
+            row_count = conn.execute(
+                f'SELECT COUNT(*) FROM "{table}"'
+            ).fetchone()[0]
+
             max_season = None
-            cur.execute(f"PRAGMA table_info([{table}])")
-            columns = [row[1] for row in cur.fetchall()]
+            columns = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'main' AND table_name = ?",
+                    [table],
+                ).fetchall()
+            }
             if "season" in columns:
-                cur.execute(f"SELECT MAX(season) FROM [{table}]")
-                max_season = cur.fetchone()[0]
+                max_season = conn.execute(
+                    f'SELECT MAX(season) FROM "{table}"'
+                ).fetchone()[0]
 
             state[table] = {"row_count": row_count, "max_season": max_season}
-        except sqlite3.OperationalError:
-            # Table doesn't exist
+        except duckdb.Error:
             state[table] = {"row_count": 0, "max_season": None}
 
     conn.close()
@@ -198,21 +215,13 @@ def init_metadata():
 
     metadata = {"last_checked": None, "releases": {}, "external": {}, "db_state": {}}
 
-    # Scan main DB
-    main_tables = []
+    all_tables = []
     for info in RELEASE_MAP.values():
-        for t in info["tables"]:
-            if t != "play_by_play":
-                main_tables.append(t)
+        all_tables.extend(info["tables"])
     for info in EXTERNAL_SOURCES.values():
-        main_tables.extend(info["tables"])
+        all_tables.extend(info["tables"])
 
-    db_state = scan_db_state(DB_PATH, main_tables)
-
-    # Scan PBP DB
-    pbp_state = scan_db_state(PBP_DB_PATH, ["play_by_play"])
-    db_state.update(pbp_state)
-
+    db_state = scan_db_state(DB_PATH, all_tables)
     metadata["db_state"] = db_state
 
     # Fetch current release timestamps
@@ -259,17 +268,13 @@ def check_updates():
     results = {"new_data": [], "updated": [], "no_change": [], "errors": []}
 
     # Scan current DB state
-    main_tables = []
+    all_tables = []
     for info in RELEASE_MAP.values():
-        for t in info["tables"]:
-            if t != "play_by_play":
-                main_tables.append(t)
+        all_tables.extend(info["tables"])
     for info in EXTERNAL_SOURCES.values():
-        main_tables.extend(info["tables"])
+        all_tables.extend(info["tables"])
 
-    current_db = scan_db_state(DB_PATH, main_tables)
-    pbp_db = scan_db_state(PBP_DB_PATH, ["play_by_play"])
-    current_db.update(pbp_db)
+    current_db = scan_db_state(DB_PATH, all_tables)
 
     # Check each nflverse-data release
     for tag, cfg in RELEASE_MAP.items():

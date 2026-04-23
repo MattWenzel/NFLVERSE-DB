@@ -2,3 +2,4 @@
 nflreadpy
 pandas
 pyarrow
+duckdb>=1.0

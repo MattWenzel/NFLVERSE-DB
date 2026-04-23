@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared pipeline for building/updating nflverse databases.
+"""Shared pipeline for building/updating the nflverse database.
 
 Provides the `TableConfig` class, year-partition and full-replace update modes,
 schema-drift handling, backups, indexing, and the shared `run()` entry point
@@ -9,11 +9,22 @@ used by both `build_db.py` (local parquet source) and `build_db_nflreadpy.py`
 
 import argparse
 import shutil
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from config import DB_PATH, DEPTH_CHARTS_LEGACY_END, PBP_DB_PATH, YEAR_RANGE_START
+import duckdb
+import pandas as pd
+
+from config import DB_PATH, DEPTH_CHARTS_LEGACY_END, YEAR_RANGE_START
+
+
+def to_string_id(s):
+    """Cast a numeric-ID column (possibly float w/ NaN) to clean strings; NULLs preserved.
+
+    Prevents '3139477.0' / '3.139477e+06' artifacts from casting a float column
+    that carries NaNs straight to str.
+    """
+    return pd.to_numeric(s, errors="coerce").astype("Int64").astype("string")
 
 
 # ---------------------------------------------------------------------------
@@ -23,10 +34,9 @@ from config import DB_PATH, DEPTH_CHARTS_LEGACY_END, PBP_DB_PATH, YEAR_RANGE_STA
 class TableConfig:
     """How to fetch and update a single table."""
 
-    def __init__(self, name, *, db="main", update_mode="year_partition",
+    def __init__(self, name, *, update_mode="year_partition",
                  fetch_fn=None, dedup_cols=None, drop_na_col=None):
         self.name = name
-        self.db = db  # "main" or "pbp"
         self.update_mode = update_mode  # "year_partition" or "full_replace"
         self.fetch_fn = fetch_fn
         self.dedup_cols = dedup_cols  # subset columns for drop_duplicates
@@ -41,6 +51,11 @@ def default_years_for(table_name):
     return list(range(start, datetime.now().year + 1))
 
 
+def _valid_years(table_name):
+    """Same as default_years_for, used to filter explicit --years against a table's range."""
+    return set(default_years_for(table_name))
+
+
 # ---------------------------------------------------------------------------
 # Backup
 # ---------------------------------------------------------------------------
@@ -49,7 +64,7 @@ def create_backup(db_path):
     """Create a rolling .bak copy of a database file."""
     if not db_path.exists():
         return
-    bak_path = db_path.with_suffix(".db.bak")
+    bak_path = db_path.with_suffix(db_path.suffix + ".bak")
     print(f"  Backing up {db_path.name} -> {bak_path.name}")
     shutil.copy2(db_path, bak_path)
 
@@ -59,12 +74,21 @@ def create_backup(db_path):
 # ---------------------------------------------------------------------------
 
 def _table_exists(conn, table_name):
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
-        (table_name,),
-    )
-    return cur.fetchone()[0] > 0
+    row = conn.execute(
+        "SELECT COUNT(*) FROM information_schema.tables "
+        "WHERE table_schema = 'main' AND table_name = ?",
+        [table_name],
+    ).fetchone()
+    return row[0] > 0
+
+
+def _existing_columns(conn, table_name):
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND table_name = ?",
+        [table_name],
+    ).fetchall()
+    return {r[0] for r in rows}
 
 
 def _add_missing_columns(conn, table_name, df):
@@ -72,22 +96,50 @@ def _add_missing_columns(conn, table_name, df):
 
     Handles schema drift between years (e.g., game_id added in later seasons).
     """
-    cur = conn.cursor()
-    cur.execute(f"PRAGMA table_info([{table_name}])")
-    existing_cols = {row[1] for row in cur.fetchall()}
+    existing_cols = _existing_columns(conn, table_name)
     new_cols = [c for c in df.columns if c not in existing_cols]
     for col in new_cols:
         dtype = df[col].dtype
         if dtype.kind == "i":
             col_type = "INTEGER"
         elif dtype.kind == "f":
-            col_type = "REAL"
+            col_type = "DOUBLE"
+        elif dtype.kind == "b":
+            col_type = "BOOLEAN"
         else:
-            col_type = "TEXT"
-        conn.execute(f"ALTER TABLE [{table_name}] ADD COLUMN [{col}] {col_type}")
+            col_type = "VARCHAR"
+        conn.execute(f'ALTER TABLE "{table_name}" ADD COLUMN "{col}" {col_type}')
     if new_cols:
-        conn.commit()
         print(f"(added {len(new_cols)} cols: {', '.join(new_cols)}) ", end="", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# DataFrame -> DuckDB helpers
+# ---------------------------------------------------------------------------
+
+def _insert_df(conn, table_name, df):
+    """Append a DataFrame into an existing table by name-matching columns."""
+    conn.register("_ingest_df", df)
+    try:
+        existing_cols = _existing_columns(conn, table_name)
+        cols = [c for c in df.columns if c in existing_cols]
+        col_list = ", ".join(f'"{c}"' for c in cols)
+        conn.execute(
+            f'INSERT INTO "{table_name}" ({col_list}) '
+            f"SELECT {col_list} FROM _ingest_df"
+        )
+    finally:
+        conn.unregister("_ingest_df")
+
+
+def _create_table_from_df(conn, table_name, df):
+    """Replace-or-create a table from a DataFrame."""
+    conn.register("_ingest_df", df)
+    try:
+        conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+        conn.execute(f'CREATE TABLE "{table_name}" AS SELECT * FROM _ingest_df')
+    finally:
+        conn.unregister("_ingest_df")
 
 
 # ---------------------------------------------------------------------------
@@ -95,19 +147,30 @@ def _add_missing_columns(conn, table_name, df):
 # ---------------------------------------------------------------------------
 
 def update_year_partition(conn, config, years, dry_run=False):
-    """Delete + re-insert data for specific years."""
+    """Delete + re-insert data for specific years, one transaction per year.
+
+    Years outside the table's valid range are skipped with a clear message —
+    this prevents e.g. `--years 2025 --tables depth_charts` from loading the
+    new-schema 2025 parquet into the frozen legacy `depth_charts` table.
+    """
+    valid = _valid_years(config.name)
+    out_of_range = [y for y in years if y not in valid]
+    if out_of_range:
+        bounds = f"{min(valid)}-{max(valid)}" if valid else "(none)"
+        for y in out_of_range:
+            print(f"  {config.name} [{y}]: SKIPPED (outside valid range {bounds})")
+    years = [y for y in years if y in valid]
     for year in years:
         print(f"  {config.name} [{year}]: ", end="", flush=True)
 
         if dry_run:
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    f"SELECT COUNT(*) FROM [{config.name}] WHERE season = ?", (year,)
-                )
-                existing = cur.fetchone()[0]
+            if _table_exists(conn, config.name):
+                existing = conn.execute(
+                    f'SELECT COUNT(*) FROM "{config.name}" WHERE season = ?',
+                    [year],
+                ).fetchone()[0]
                 print(f"would replace {existing:,} existing rows")
-            except sqlite3.OperationalError:
+            else:
                 print("table does not exist (would create)")
             continue
 
@@ -131,7 +194,8 @@ def update_year_partition(conn, config, years, dry_run=False):
 
         if not _table_exists(conn, config.name):
             try:
-                df.to_sql(config.name, conn, if_exists="replace", index=False)
+                conn.begin()
+                _create_table_from_df(conn, config.name, df)
                 conn.commit()
                 print(f"{len(df):,} rows inserted (table created)")
             except Exception as e:
@@ -139,12 +203,13 @@ def update_year_partition(conn, config, years, dry_run=False):
                 print(f"ERROR creating table: {e}")
             continue
 
-        _add_missing_columns(conn, config.name, df)
-
         try:
-            conn.execute(f"DELETE FROM [{config.name}] WHERE season = ?", (year,))
-            conn.commit()
-            df.to_sql(config.name, conn, if_exists="append", index=False)
+            conn.begin()
+            _add_missing_columns(conn, config.name, df)
+            conn.execute(
+                f'DELETE FROM "{config.name}" WHERE season = ?', [year]
+            )
+            _insert_df(conn, config.name, df)
             conn.commit()
             print(f"{len(df):,} rows inserted")
         except Exception as e:
@@ -157,12 +222,12 @@ def update_full_replace(conn, config, dry_run=False):
     print(f"  {config.name}: ", end="", flush=True)
 
     if dry_run:
-        try:
-            cur = conn.cursor()
-            cur.execute(f"SELECT COUNT(*) FROM [{config.name}]")
-            existing = cur.fetchone()[0]
+        if _table_exists(conn, config.name):
+            existing = conn.execute(
+                f'SELECT COUNT(*) FROM "{config.name}"'
+            ).fetchone()[0]
             print(f"would replace {existing:,} existing rows")
-        except sqlite3.OperationalError:
+        else:
             print("table does not exist (would create)")
         return
 
@@ -184,8 +249,14 @@ def update_full_replace(conn, config, dry_run=False):
         if dedup_available:
             df = df.drop_duplicates(subset=dedup_available, keep="first")
 
-    df.to_sql(config.name, conn, if_exists="replace", index=False)
-    print(f"{len(df):,} rows")
+    try:
+        conn.begin()
+        _create_table_from_df(conn, config.name, df)
+        conn.commit()
+        print(f"{len(df):,} rows")
+    except Exception as e:
+        conn.rollback()
+        print(f"ERROR (rolled back): {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -201,19 +272,20 @@ def backfill_season_stats_team(conn, years=None, dry_run=False):
         return
 
     year_clause = ""
-    params = ()
+    params = []
     if years:
         placeholders = ",".join("?" for _ in years)
         year_clause = f"AND season_stats.season IN ({placeholders})"
-        params = tuple(years)
+        params = list(years)
 
     try:
+        conn.begin()
         conn.execute(f"""
             UPDATE season_stats
             SET recent_team = (
                 SELECT g.team
                 FROM game_stats g
-                WHERE g.player_id = season_stats.player_id
+                WHERE g.player_gsis_id = season_stats.player_gsis_id
                   AND g.season = season_stats.season
                 GROUP BY g.team
                 ORDER BY COUNT(*) DESC
@@ -221,7 +293,7 @@ def backfill_season_stats_team(conn, years=None, dry_run=False):
             )
             WHERE EXISTS (
                 SELECT 1 FROM game_stats g2
-                WHERE g2.player_id = season_stats.player_id
+                WHERE g2.player_gsis_id = season_stats.player_gsis_id
                   AND g2.season = season_stats.season
             )
             {year_clause}
@@ -229,16 +301,16 @@ def backfill_season_stats_team(conn, years=None, dry_run=False):
         conn.commit()
         print("done")
     except Exception as e:
+        conn.rollback()
         print(f"ERROR: {e}")
 
 
 def create_indexes(conn):
-    """Create standard indexes on the main database."""
+    """Create standard indexes on the database."""
     print("  Creating indexes...", end=" ", flush=True)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_game_stats_player_season ON game_stats(player_id, season)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_season_stats_player_season ON season_stats(player_id, season)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_players_gsis_id ON players(gsis_id)")
-    conn.commit()
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_game_stats_player_season ON game_stats(player_gsis_id, season)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_season_stats_player_season ON season_stats(player_gsis_id, season)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_players_player_gsis_id ON players(player_gsis_id)")
     print("done")
 
 
@@ -251,7 +323,8 @@ def check_integrity(conn, dry_run=False):
     existing = {
         row[0]
         for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main'"
         ).fetchall()
     }
     if not required.issubset(existing):
@@ -260,19 +333,16 @@ def check_integrity(conn, dry_run=False):
         return
 
     print("  Checking referential integrity...", end=" ", flush=True)
-    cur = conn.cursor()
 
-    cur.execute("""
+    orphan_games = conn.execute("""
         SELECT COUNT(*) FROM game_stats g
-        WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.gsis_id = g.player_id)
-    """)
-    orphan_games = cur.fetchone()[0]
+        WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.player_gsis_id = g.player_gsis_id)
+    """).fetchone()[0]
 
-    cur.execute("""
+    orphan_seasons = conn.execute("""
         SELECT COUNT(*) FROM season_stats s
-        WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.gsis_id = s.player_id)
-    """)
-    orphan_seasons = cur.fetchone()[0]
+        WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.player_gsis_id = s.player_gsis_id)
+    """).fetchone()[0]
 
     if orphan_games or orphan_seasons:
         print(f"WARNING: {orphan_games} orphan game_stats, {orphan_seasons} orphan season_stats")
@@ -290,14 +360,13 @@ def build_arg_parser(description):
     parser.add_argument("--tables", nargs="+", help="Specific table(s) to process")
     parser.add_argument("--years", nargs="+", type=int,
                         help="Specific year(s) for year-partitioned tables")
-    parser.add_argument("--pbp", action="store_true", help="Include play-by-play DB")
+    parser.add_argument("--pbp", action="store_true", help="Include play-by-play table")
     parser.add_argument("--all", action="store_true",
                         help="Process all tables across all years")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview changes without modifying")
     parser.add_argument("--no-backup", action="store_true", help="Skip backup step")
-    parser.add_argument("--output", type=str, help="Write main DB to a different path")
-    parser.add_argument("--output-pbp", type=str, help="Write PBP to a different path")
+    parser.add_argument("--output", type=str, help="Write DB to a different path")
     return parser
 
 
@@ -313,13 +382,14 @@ def run(table_configs, args, title="nflverse DB"):
         print("*** DRY RUN — no changes will be made ***")
     print()
 
-    # Pick tables
+    # Pick tables. play_by_play is opt-in via --pbp or explicit --tables;
+    # --all by itself still excludes it to match the old two-DB behavior.
     if args.tables:
         table_names = list(args.tables)
     elif args.pbp and not args.all:
         table_names = ["play_by_play"]
     else:
-        table_names = [name for name, cfg in table_configs.items() if cfg.db == "main"]
+        table_names = [n for n in table_configs if n != "play_by_play"]
 
     if args.pbp and "play_by_play" not in table_names and "play_by_play" in table_configs:
         table_names.append("play_by_play")
@@ -343,33 +413,22 @@ def run(table_configs, args, title="nflverse DB"):
     print(f"Years: {', '.join(str(y) for y in years) if years else 'all (full range)'}")
     print()
 
-    # Resolve paths
     output_db = Path(args.output) if args.output else DB_PATH
-    output_pbp = Path(args.output_pbp) if args.output_pbp else PBP_DB_PATH
 
-    def _resolve_db(cfg):
-        return output_pbp if cfg.db == "pbp" else output_db
-
-    dbs_touched = {_resolve_db(table_configs[n]) for n in table_names}
-
-    # Backup
     if not args.no_backup and not args.dry_run and not args.output:
         print("Creating backups:")
-        for db_path in dbs_touched:
-            create_backup(db_path)
+        create_backup(output_db)
         print()
 
-    for db_path in dbs_touched:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+    output_db.parent.mkdir(parents=True, exist_ok=True)
 
-    connections = {p: sqlite3.connect(str(p)) for p in dbs_touched}
+    conn = duckdb.connect(str(output_db))
 
     try:
         updated_season_stats = updated_game_stats = False
 
         for name in table_names:
             cfg = table_configs[name]
-            conn = connections[_resolve_db(cfg)]
 
             print(f"Processing {name}:")
             if cfg.update_mode == "year_partition":
@@ -383,21 +442,19 @@ def run(table_configs, args, title="nflverse DB"):
                 update_full_replace(conn, cfg, dry_run=args.dry_run)
             print()
 
-        main_conn = connections.get(output_db)
-        if main_conn and updated_season_stats and updated_game_stats:
-            backfill_season_stats_team(main_conn, years=years, dry_run=args.dry_run)
+        if updated_season_stats and updated_game_stats:
+            backfill_season_stats_team(conn, years=years, dry_run=args.dry_run)
             print()
 
-        if main_conn and not args.dry_run and args.all:
-            create_indexes(main_conn)
+        if not args.dry_run and args.all:
+            create_indexes(conn)
             print()
 
-        if main_conn and not args.dry_run:
-            check_integrity(main_conn)
+        if not args.dry_run:
+            check_integrity(conn)
             print()
 
     finally:
-        for conn in connections.values():
-            conn.close()
+        conn.close()
 
     print(f"Completed in {datetime.now() - start}")

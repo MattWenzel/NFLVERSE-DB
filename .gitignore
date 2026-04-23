@@ -6,6 +6,9 @@ data/*.db
 data/*.db.bak
 data/*.db-shm
 data/*.db-wal
+data/*.duckdb
+data/*.duckdb.bak
+data/*.duckdb.wal
 
 # Raw data files (downloaded from GitHub, rebuild locally)
 data/raw/

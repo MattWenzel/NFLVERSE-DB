@@ -6,8 +6,7 @@ Comprehensive NFL player statistics database built from [nflverse](https://githu
 
 | Database | Size | Tables | Total Rows | Years |
 |----------|------|--------|------------|-------|
-| `nflverse.db` | 327 MB | 13 | ~2.25M | 1999-2025 |
-| `pbp.db` | 2,082 MB | 1 | 1.28M | 1999-2025 |
+| `nflverse.duckdb` | ~740 MB | 14 | ~3.5M | 1999-2025 |
 
 ### Table Row Counts
 
@@ -26,26 +25,26 @@ Comprehensive NFL player statistics database built from [nflverse](https://githu
 | **depth_charts_2025** | 476,501 | 12 | Daily depth charts (2025+, different schema) |
 | **pfr_advanced** | 7,798 | 64 | PFR advanced stats (2018-2025) |
 | **qbr** | 9,570 | 30 | ESPN Total QBR (2006-2023) |
-| **play_by_play** | 1,279,628 | 372 | Every NFL play (pbp.db) |
+| **play_by_play** | 1,279,628 | 372 | Every NFL play (1999-2025) |
 
 ---
 
 ## Schema Overview
 
 ```
-                           nflverse.db
+                          nflverse.duckdb
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                              PLAYERS                                    │
 │   gsis_id (PK) | display_name | position | latest_team | headshot | ...│
 │   39 columns including ngs_position, otc_id, smart_id                  │
 └──────────────────────────────────────────────────────────────────────────┘
          │
-         │ FK: player_id = players.gsis_id
+         │ FK: player_gsis_id = players.player_gsis_id
          ▼
 ┌─────────────────────────┐        ┌─────────────────────────┐
 │       GAME_STATS        │        │      SEASON_STATS       │
-│  player_id + season +   │        │  player_id + season     │
-│  week (475K rows)       │        │  (49K rows)             │
+│  player_gsis_id +       │        │  player_gsis_id +       │
+│  season + week (475K)   │        │  season (49K rows)      │
 │  115 columns: offense,  │        │  113 columns: aggregated│
 │  defense, kicking, ST   │        │  totals, recent_team    │
 └─────────────────────────┘        └─────────────────────────┘
@@ -86,11 +85,10 @@ Comprehensive NFL player statistics database built from [nflverse](https://githu
 │  2018-2025              │        │  2006-2023              │
 └─────────────────────────┘        └─────────────────────────┘
 
-                              pbp.db (separate)
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                           PLAY_BY_PLAY                                  │
 │     game_id + play_id | 372 columns | EPA/WPA/CPOE | Player IDs (GSIS) │
-│     1.28M plays (1999-2025)                                            │
+│     1.28M plays (1999-2025) — same database as everything above        │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -98,55 +96,61 @@ Comprehensive NFL player statistics database built from [nflverse](https://githu
 
 ## ID System & Relationships
 
-### Primary Key: GSIS ID
+### Normalized ID columns
 
-Most tables use the NFL's **Game Statistics & Information System ID (GSIS ID)** as the primary identifier:
-- Format: `00-0033873` (Patrick Mahomes)
-- Column name varies: `gsis_id` in `players`, `player_id` in `game_stats`/`season_stats`
-- Used in: `players`, `game_stats`, `season_stats`, `ngs_stats`, `depth_charts`, `depth_charts_2025`, `pbp.db`
+Player-level tables use a standardized naming convention. The column name tells you exactly which ID system the value belongs to:
 
-### Key Join: game_stats ↔ players
+| Convention | ID system | Format | Example |
+|-----------|-----------|--------|---------|
+| `player_gsis_id` | NFL GSIS | `00-0033873` | Patrick Mahomes |
+| `player_pfr_id` | Pro Football Reference | `MahoPa00` | Patrick Mahomes |
+| `player_espn_id` | ESPN (VARCHAR) | `3139477` | Patrick Mahomes |
 
-The main stats tables use `player_id` while players uses `gsis_id` — same GSIS format, different column names:
+Most joins to player bio data are one-hop direct:
 
 ```sql
--- game_stats.player_id = players.gsis_id (both are GSIS IDs)
+-- game_stats/season_stats/depth_charts/depth_charts_2025/ngs_stats/draft_picks to players
 SELECT p.display_name, g.passing_yards
 FROM game_stats g
-JOIN players p ON g.player_id = p.gsis_id;
+JOIN players p ON g.player_gsis_id = p.player_gsis_id;
 ```
 
-### Supplementary Table ID Mapping
+### Cross-ID bridge: `player_ids`
 
-Different data sources use different ID systems. The `player_ids` table provides cross-references:
+The `player_ids` table carries every ID system (GSIS, PFR, ESPN, Yahoo, Sleeper, Fantasy Data, etc.) keyed by GSIS. It keeps its short column names (`gsis_id`, `pfr_id`, `espn_id`, …) because that's its whole job — bridging between ID systems. Use it when a table uses one ID system and you want to reach another.
 
-| Table | ID Column | Format | Join Path |
-|-------|-----------|--------|-----------|
-| `game_stats` | `player_id` | `00-0033873` (GSIS) | Direct to `players.gsis_id` |
-| `season_stats` | `player_id` | `00-0033873` (GSIS) | Direct to `players.gsis_id` |
-| `ngs_stats` | `player_gsis_id` | `00-0035228` | Direct to `players.gsis_id` |
-| `depth_charts` | `gsis_id` | `00-0035228` | Direct to `players.gsis_id` |
-| `depth_charts_2025` | `gsis_id` | `00-0035228` | Direct to `players.gsis_id` |
-| `snap_counts` | `pfr_player_id` | `MahoPa00` | Via `player_ids.pfr_id` → `gsis_id` |
-| `pfr_advanced` | `pfr_id` | `MahoPa00` | Via `player_ids.pfr_id` → `gsis_id` |
-| `qbr` | `player_id` | `3139477` (ESPN) | Via `player_ids.espn_id` → `gsis_id` |
-| `pbp.db` | `*_player_id` | `00-0035228` | Direct to `players.gsis_id` |
+### ID column mapping per table
+
+| Table | Primary ID column | Joins directly to |
+|-------|-------------------|-------------------|
+| `players` | `player_gsis_id` | — (canonical bio) |
+| `game_stats` | `player_gsis_id` | `players.player_gsis_id` |
+| `season_stats` | `player_gsis_id` | `players.player_gsis_id` |
+| `ngs_stats` | `player_gsis_id` | `players.player_gsis_id` |
+| `depth_charts` | `player_gsis_id` | `players.player_gsis_id` |
+| `depth_charts_2025` | `player_gsis_id` | `players.player_gsis_id` |
+| `draft_picks` | `player_gsis_id` + `player_pfr_id` | either key |
+| `combine` | `player_pfr_id` | via `player_ids.pfr_id` → `gsis_id` |
+| `snap_counts` | `player_pfr_id` | via `player_ids.pfr_id` → `gsis_id` |
+| `pfr_advanced` | `player_pfr_id` | via `player_ids.pfr_id` → `gsis_id` |
+| `qbr` | `player_espn_id` | via `player_ids.espn_id` → `gsis_id` |
+| `play_by_play` | `*_player_id` (semantic — GSIS) | `players.player_gsis_id` |
 
 ### Join Examples
 
 ```sql
--- Join snap_counts to players via PFR ID
+-- snap_counts to players via PFR ID
 SELECT p.display_name, sc.offense_snaps, sc.offense_pct
 FROM snap_counts sc
-JOIN player_ids pi ON sc.pfr_player_id = pi.pfr_id
-JOIN players p ON pi.gsis_id = p.gsis_id
+JOIN player_ids pi ON sc.player_pfr_id = pi.pfr_id
+JOIN players p ON pi.gsis_id = p.player_gsis_id
 WHERE sc.season = 2024 AND sc.week = 1;
 
--- Join QBR to players via ESPN ID
+-- QBR to players via ESPN ID (no CAST needed — both sides are VARCHAR)
 SELECT p.display_name, q.qbr_total, q.pts_added
 FROM qbr q
-JOIN player_ids pi ON q.player_id = pi.espn_id
-JOIN players p ON pi.gsis_id = p.gsis_id
+JOIN player_ids pi ON q.player_espn_id = pi.espn_id
+JOIN players p ON pi.gsis_id = p.player_gsis_id
 WHERE q.season = 2023;
 ```
 
@@ -162,7 +166,7 @@ Master registry of all NFL players with biographical and career information.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `gsis_id` | TEXT | **Primary Key** - NFL GSIS ID (`00-0033873`) |
+| `player_gsis_id` | TEXT | **Primary Key** - NFL GSIS ID (`00-0033873`) |
 | `display_name` | TEXT | Full display name (e.g., "Patrick Mahomes") |
 | `common_first_name` | TEXT | Common first name |
 | `first_name` | TEXT | First name |
@@ -172,10 +176,10 @@ Master registry of all NFL players with biographical and career information.
 | `suffix` | TEXT | Name suffix (Jr., III, etc.) |
 | `esb_id` | TEXT | Elias Sports Bureau ID |
 | `nfl_id` | TEXT | NFL.com ID |
-| `pfr_id` | TEXT | Pro Football Reference ID |
+| `player_pfr_id` | TEXT | Pro Football Reference ID |
 | `pff_id` | TEXT | Pro Football Focus ID |
 | `otc_id` | TEXT | Over The Cap ID |
-| `espn_id` | TEXT | ESPN player ID |
+| `player_espn_id` | TEXT | ESPN player ID |
 | `smart_id` | TEXT | Smart ID |
 | `birth_date` | TEXT | Birth date (YYYY-MM-DD) |
 | `position_group` | TEXT | Position group (QB, RB, WR, TE, OL, DL, LB, DB, SPEC) |
@@ -204,7 +208,7 @@ Master registry of all NFL players with biographical and career information.
 
 **Example Row (Patrick Mahomes):**
 ```
-gsis_id: 00-0033873
+player_gsis_id: 00-0033873
 display_name: Patrick Mahomes
 position: QB
 latest_team: KC
@@ -213,8 +217,8 @@ weight: 225.0
 college_name: Texas Tech
 headshot: https://static.www.nfl.com/image/upload/...
 rookie_season: 2017
-pfr_id: MahoPa00
-espn_id: 3139477
+player_pfr_id: MahoPa00
+player_espn_id: 3139477
 draft_year: 2017, draft_round: 1, draft_pick: 10
 ```
 
@@ -239,7 +243,7 @@ Cross-reference table mapping GSIS IDs to 20+ other platforms.
 | `pff_id` | REAL | Pro Football Focus ID |
 | `sleeper_id` | REAL | Sleeper app ID |
 | `nfl_id` | REAL | NFL.com ID |
-| `espn_id` | REAL | ESPN ID |
+| `espn_id` | VARCHAR | ESPN ID (stored as string to preserve leading zeros and avoid float artifacts) |
 | `yahoo_id` | TEXT | Yahoo Fantasy ID |
 | `fleaflicker_id` | TEXT | Fleaflicker ID |
 | `cbs_id` | REAL | CBS Sports ID |
@@ -345,7 +349,7 @@ Contains ALL stat columns for ALL position groups — offensive, defensive, kick
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `player_id` | TEXT | **FK** → `players.gsis_id` (GSIS format) |
+| `player_gsis_id` | TEXT | **FK** → `players.player_gsis_id` (GSIS format) |
 | `player_name` | TEXT | Player name |
 | `player_display_name` | TEXT | Full display name |
 | `position` | TEXT | Position |
@@ -514,11 +518,11 @@ Contains ALL stat columns for ALL position groups — offensive, defensive, kick
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `game_id` | TEXT | nflverse game ID (only populated 2022+) |
+| `game_id` | TEXT | nflverse game ID (populated only for some seasons: 2022, 2023, 2025; NULL for 1999–2021 and 2024) |
 - `sack_yards_lost` (was `sack_yards`)
 
 **Indexes:**
-- `idx_game_stats_player_season` on `(player_id, season)`
+- `idx_game_stats_player_season` on `(player_gsis_id, season)`
 
 ---
 
@@ -530,7 +534,7 @@ Aggregated season totals. Same stat columns as `game_stats` but summed across al
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `player_id` | TEXT | **FK** → `players.gsis_id` (GSIS format) |
+| `player_gsis_id` | TEXT | **FK** → `players.player_gsis_id` (GSIS format) |
 | `player_name` | TEXT | Player name |
 | `player_display_name` | TEXT | Full display name |
 | `position` | TEXT | Position |
@@ -549,7 +553,7 @@ Aggregated season totals. Same stat columns as `game_stats` but summed across al
 **Note:** `season_stats` uses `gwfg_distance_list` (TEXT) instead of `game_stats`'s `gwfg_distance` (INTEGER).
 
 **Indexes:**
-- `idx_season_stats_player_season` on `(player_id, season)`
+- `idx_season_stats_player_season` on `(player_gsis_id, season)`
 
 ---
 
@@ -565,8 +569,8 @@ Historical NFL draft data with career statistics and accolades.
 | `round` | INTEGER | Draft round |
 | `pick` | INTEGER | Overall pick number |
 | `team` | TEXT | Drafting team |
-| `gsis_id` | TEXT | Player GSIS ID (may be NULL for older picks) |
-| `pfr_player_id` | TEXT | Pro Football Reference ID |
+| `player_gsis_id` | TEXT | Player GSIS ID (may be NULL for older picks) |
+| `player_pfr_id` | TEXT | Pro Football Reference ID |
 | `cfb_player_id` | TEXT | College Football Reference ID |
 | `pfr_player_name` | TEXT | Player name |
 | `hof` | INTEGER | 1 if Hall of Fame inductee |
@@ -613,7 +617,7 @@ NFL Scouting Combine results with draft information.
 | `draft_team` | TEXT | Team that drafted player |
 | `draft_round` | REAL | Draft round |
 | `draft_ovr` | REAL | Overall draft pick |
-| `pfr_id` | TEXT | Pro Football Reference ID |
+| `player_pfr_id` | TEXT | Pro Football Reference ID |
 | `cfb_id` | TEXT | College Football Reference ID |
 | `player_name` | TEXT | Player name |
 | `pos` | TEXT | Position |
@@ -647,7 +651,7 @@ Weekly snap participation by phase (offense, defense, special teams).
 | `game_type` | TEXT | REG or POST |
 | `week` | INTEGER | Week number |
 | `player` | TEXT | Player name |
-| `pfr_player_id` | TEXT | **PFR ID** (e.g., `MahoPa00`) |
+| `player_pfr_id` | TEXT | **PFR ID** (e.g., `MahoPa00`) — joins to `player_ids.pfr_id` |
 | `position` | TEXT | Position |
 | `team` | TEXT | Team |
 | `opponent` | TEXT | Opponent |
@@ -759,7 +763,7 @@ Weekly depth chart positions for all teams (historical).
 | `first_name` | TEXT | First name |
 | `football_name` | TEXT | Football name |
 | `formation` | TEXT | Offense or Defense |
-| `gsis_id` | TEXT | **GSIS ID** |
+| `player_gsis_id` | TEXT | **GSIS ID** — joins to `players.player_gsis_id` |
 | `jersey_number` | TEXT | Jersey number |
 | `position` | TEXT | Listed position |
 | `elias_id` | TEXT | Elias Sports Bureau ID |
@@ -772,15 +776,15 @@ Weekly depth chart positions for all teams (historical).
 
 Daily depth chart positions for 2025+ season. **Different schema from `depth_charts`** — nflverse changed the depth chart format starting in 2025.
 
-**Rows:** 476,501 | **Date range:** 2025-08-03 to 2026-02-13 | **ID:** GSIS ID (`gsis_id`) + ESPN ID (`espn_id`) | **Columns:** 12
+**Rows:** 476,501 | **Date range:** 2025-08-03 to 2026-02-13 | **ID:** GSIS ID (`player_gsis_id`) + ESPN ID (`player_espn_id`) | **Columns:** 12
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `dt` | TEXT | ISO 8601 timestamp (e.g. `2025-08-03T10:09:07Z`) — no `season` column |
 | `team` | TEXT | Team abbreviation |
 | `player_name` | TEXT | Player name |
-| `espn_id` | TEXT | ESPN player ID |
-| `gsis_id` | TEXT | **GSIS ID** |
+| `player_espn_id` | TEXT | ESPN player ID — joins to `player_ids.espn_id` |
+| `player_gsis_id` | TEXT | **GSIS ID** — joins to `players.player_gsis_id` |
 | `pos_grp_id` | TEXT | Position group ID |
 | `pos_grp` | TEXT | Position group name |
 | `pos_id` | TEXT | Position ID |
@@ -792,7 +796,7 @@ Daily depth chart positions for 2025+ season. **Different schema from `depth_cha
 **Key differences from `depth_charts`:**
 - Uses `dt` (date) instead of `season` + `week` — daily snapshots rather than weekly
 - No `formation`, `depth_position`, or `elias_id` columns
-- Includes `espn_id` for direct ESPN joins
+- Includes `player_espn_id` for direct ESPN joins
 - Position info split into `pos_grp`/`pos_name`/`pos_abb` instead of `position`/`depth_position`
 
 ---
@@ -801,7 +805,7 @@ Daily depth chart positions for 2025+ season. **Different schema from `depth_cha
 
 Pro Football Reference advanced statistics. Contains three stat types with different columns.
 
-**Rows:** 7,798 | **Years:** 2018-2025 | **ID:** PFR ID (`pfr_id`) | **Columns:** 64
+**Rows:** 7,798 | **Years:** 2018-2025 | **ID:** PFR ID (`player_pfr_id`) | **Columns:** 64
 
 **Stat Types:** `pass`, `rush`, `rec`
 
@@ -812,7 +816,7 @@ Pro Football Reference advanced statistics. Contains three stat types with diffe
 | `player` | TEXT | Player name |
 | `team` | TEXT | Team |
 | `season` | INTEGER | Season year |
-| `pfr_id` | TEXT | **PFR ID** (e.g., `RoetBe00`) |
+| `player_pfr_id` | TEXT | **PFR ID** (e.g., `RoetBe00`) — joins to `player_ids.pfr_id` |
 | `stat_type` | TEXT | `pass`, `rush`, or `rec` |
 | `tm` | TEXT | Team abbreviation |
 | `age` | REAL | Age |
@@ -899,7 +903,7 @@ Pro Football Reference advanced statistics. Contains three stat types with diffe
 
 ESPN Total QBR (Quarterback Rating) data. Weekly rows only — **no season-total rows**; aggregate with `AVG(qbr_total)` grouped by player + season.
 
-**Rows:** 9,570 | **Years:** 2006-2023 | **ID:** ESPN ID (`player_id`) | **Columns:** 30
+**Rows:** 9,570 | **Years:** 2006-2023 | **ID:** ESPN ID (`player_espn_id`) | **Columns:** 30
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -909,7 +913,7 @@ ESPN Total QBR (Quarterback Rating) data. Weekly rows only — **no season-total
 | `game_week` | INTEGER | Week number |
 | `week_text` | TEXT | Week label (e.g., "Week 1" … "Week 18", "Wild Card", "Divisional Round", "Conference Championship", "Super Bowl", "Pro Bowl") |
 | `team_abb` | TEXT | Team abbreviation |
-| `player_id` | INTEGER | **ESPN ID** |
+| `player_espn_id` | VARCHAR | **ESPN ID** — joins to `player_ids.espn_id` |
 | `name_short` | TEXT | Short name (e.g., "P. Manning") |
 | `rank` | REAL | QBR rank |
 | `qbr_total` | REAL | Total QBR (0-100 scale) |
@@ -936,15 +940,15 @@ ESPN Total QBR (Quarterback Rating) data. Weekly rows only — **no season-total
 
 ---
 
-## Play-by-Play Database (`pbp.db`)
+## Play-by-Play Table
 
-Separate database containing every NFL play from 1999-2025. At 2,082 MB it is too large to combine with the main database.
+Every NFL play from 1999-2025. Lives in the same `nflverse.duckdb` file as everything else — joins against `games`, `players`, etc. need no ATTACH.
 
 ### Table: `play_by_play`
 
 **Rows:** 1,279,628 | **Years:** 1999-2025 | **Columns:** 372
 
-All player ID columns use **GSIS ID** format (`00-0035228`) for direct joins to `nflverse.db.players.gsis_id`.
+All player ID columns use **GSIS ID** format (`00-0035228`) for direct joins to `players.player_gsis_id`.
 
 All 372 nflverse columns are retained, organized into the following categories:
 
@@ -1036,21 +1040,19 @@ Pass over expected: `xpass`, `pass_oe`, `qb_epa`
 
 `series`, `series_success`, `series_result`, `order_sequence`, `start_time`, `time_of_day`, `weather`, `nfl_api_id`, `play_clock`, `play_deleted`, `special_teams_play`, `st_play_type`, `end_clock_time`, `end_yard_line`, `replay_or_challenge`, `replay_or_challenge_result`, `out_of_bounds`, `home_opening_kickoff`
 
-**Note:** `pbp.db` has no indexes. Consider adding indexes on frequently-queried columns for better performance.
+**Note:** `play_by_play` has no explicit indexes. DuckDB's columnar layout and zone maps make most aggregate queries fast without them; if a specific point-lookup query is slow, add an index then.
 
 ---
 
 ## Indexes
 
-Minimal indexes by default — only 3 are created on the main database:
+Only three explicit indexes are created — DuckDB's columnar storage handles most access patterns without them:
 
 | Index | Table | Columns |
 |-------|-------|---------|
-| `idx_game_stats_player_season` | `game_stats` | `(player_id, season)` |
-| `idx_season_stats_player_season` | `season_stats` | `(player_id, season)` |
-| `idx_players_gsis_id` | `players` | `gsis_id` |
-
-`pbp.db` has no indexes.
+| `idx_game_stats_player_season` | `game_stats` | `(player_gsis_id, season)` |
+| `idx_season_stats_player_season` | `season_stats` | `(player_gsis_id, season)` |
+| `idx_players_player_gsis_id` | `players` | `player_gsis_id` |
 
 ---
 
@@ -1069,7 +1071,7 @@ SELECT
     s.rushing_tds,
     s.fantasy_points
 FROM season_stats s
-JOIN players p ON s.player_id = p.gsis_id
+JOIN players p ON s.player_gsis_id = p.player_gsis_id
 WHERE p.display_name = 'Patrick Mahomes'
 ORDER BY s.season;
 ```
@@ -1085,7 +1087,7 @@ SELECT
     g.passing_yards,
     g.passing_tds
 FROM game_stats g
-JOIN players p ON g.player_id = p.gsis_id
+JOIN players p ON g.player_gsis_id = p.player_gsis_id
 WHERE p.position = 'RB' AND g.passing_tds > 0
 ORDER BY g.passing_tds DESC
 LIMIT 20;
@@ -1100,7 +1102,7 @@ SELECT
     s.season,
     s.fantasy_points
 FROM season_stats s
-JOIN players p ON s.player_id = p.gsis_id
+JOIN players p ON s.player_gsis_id = p.player_gsis_id
 WHERE s.season_type = 'REG'
 ORDER BY s.fantasy_points DESC
 LIMIT 10;
@@ -1117,7 +1119,7 @@ SELECT
     s.def_tackles_for_loss,
     s.recent_team
 FROM season_stats s
-JOIN players p ON s.player_id = p.gsis_id
+JOIN players p ON s.player_gsis_id = p.player_gsis_id
 WHERE s.season_type = 'REG' AND s.def_sacks > 0
 ORDER BY s.def_sacks DESC
 LIMIT 20;
@@ -1133,8 +1135,8 @@ SELECT
     sc.offense_pct,
     sc.team
 FROM snap_counts sc
-JOIN player_ids pi ON sc.pfr_player_id = pi.pfr_id
-JOIN players p ON pi.gsis_id = p.gsis_id
+JOIN player_ids pi ON sc.player_pfr_id = pi.pfr_id
+JOIN players p ON pi.gsis_id = p.player_gsis_id
 WHERE p.display_name = 'Justin Jefferson'
   AND sc.season = 2024
 ORDER BY sc.week;
@@ -1152,8 +1154,8 @@ SELECT
     SUM(q.pts_added) AS pts_added,
     SUM(q.qb_plays) AS qb_plays
 FROM qbr q
-JOIN player_ids pi ON q.player_id = pi.espn_id
-JOIN players p ON pi.gsis_id = p.gsis_id
+JOIN player_ids pi ON q.player_espn_id = pi.espn_id
+JOIN players p ON pi.gsis_id = p.player_gsis_id
 WHERE q.season = 2023
   AND q.season_type = 'Regular'
   AND q.qualified = 1
@@ -1176,7 +1178,7 @@ SELECT
     s.pat_att,
     s.recent_team
 FROM season_stats s
-JOIN players p ON s.player_id = p.gsis_id
+JOIN players p ON s.player_gsis_id = p.player_gsis_id
 WHERE p.position = 'K' AND s.season = 2024 AND s.season_type = 'REG'
 ORDER BY s.fg_made DESC;
 ```
@@ -1206,15 +1208,12 @@ ORDER BY season;
 ### Red zone efficiency from play-by-play
 
 ```sql
--- Attach pbp.db when needed
-ATTACH DATABASE 'pbp.db' AS pbp;
-
 SELECT
     p.passer_player_name,
     COUNT(*) as red_zone_passes,
     SUM(p.touchdown) as pass_tds,
     ROUND(100.0 * SUM(p.touchdown) / COUNT(*), 1) as td_rate
-FROM pbp.play_by_play p
+FROM play_by_play p
 WHERE p.season = 2024
   AND p.yardline_100 <= 20
   AND p.pass_attempt = 1
@@ -1236,7 +1235,7 @@ SELECT
     i.pfr_id,
     i.fantasy_data_id
 FROM players p
-JOIN player_ids i ON p.gsis_id = i.gsis_id
+JOIN player_ids i ON p.player_gsis_id = i.gsis_id
 WHERE p.display_name = 'Justin Jefferson';
 ```
 
@@ -1270,7 +1269,7 @@ Data is sourced from [nflverse](https://github.com/nflverse) via `nflreadpy` (su
 # Primary: download raw files, then build locally
 python3 scripts/download.py --all
 python3 scripts/build_db.py --all
-python3 scripts/build_db.py --all --output data/nflverse.db
+python3 scripts/build_db.py --all --output data/nflverse.duckdb
 
 # Alternative (fallback via nflreadpy network client; use if the primary path breaks)
 python3 scripts/build_db_nflreadpy.py --all
@@ -1289,13 +1288,13 @@ See [`../README.md`](../README.md) for the full command reference.
 - **Column naming**: All tables use nflverse-native column names — no custom renames applied during load.
 - **All position groups**: `game_stats`/`season_stats` include ~115 columns covering every position (offensive, defensive, kicking, special teams).
 - **`season_stats.recent_team`**: Backfilled from `game_stats.team` (most common team per player-season); nflverse source doesn't always populate it.
-- **`game_id` in `game_stats`**: Only populated for 2022+ (nflverse doesn't provide it for 1999-2021).
+- **`game_id` in `game_stats`**: Populated only for 2022, 2023, and 2025 — NULL for 1999–2021 and for 2024 (nflverse hasn't backfilled those seasons). Filter on `game_id IS NOT NULL` or join against `games` on `(season, week, team, opponent_team)` when you need game context for the unpopulated years.
 - **`depth_charts` vs `depth_charts_2025`**: Separate tables due to nflverse schema change in 2025. The 2025+ format uses daily snapshots (`dt` column) instead of weekly, and has a different position structure.
 - **`combine` table**: Has no join edges to other tables — query separately.
 - **NGS `stat_type`**: `passing`, `rushing`, `receiving`; `week=0` = season totals.
 - **PFR `stat_type`**: `pass`, `rush`, `rec` (different naming from NGS!).
 - **QBR**: `season_type` is `"Regular"` or `"Postseason"`. No season-total rows exist — aggregate weekly rows with `AVG(qbr_total)` grouped by player + season. Filter `qualified = 1` (ESPN's qualifying threshold) or `qb_plays >= 200` for starter-level samples.
 - **Schema drift**: Handled automatically by the build scripts, which add missing columns via `ALTER TABLE`.
-- **Join path**: `game_stats.player_id = players.gsis_id` (same GSIS format, different column names).
+- **Join path**: `game_stats.player_gsis_id = players.player_gsis_id` — direct join, no name translation needed.
 - **`nfl_data_py`**: Archived Sept 2025. Successor is `nflreadpy`.
 - **Draft picks**: Go back to 1980 with career stats, Pro Bowl/All-Pro counts, and HOF flag.
