@@ -314,6 +314,72 @@ def create_indexes(conn):
     print("done")
 
 
+def drop_views(conn):
+    """Drop convenience views. Call before any full_replace table rewrite so
+    DuckDB's dependency check doesn't block the underlying DROP TABLE."""
+    conn.execute("DROP VIEW IF EXISTS v_depth_charts")
+
+
+def create_views(conn):
+    """Create convenience views over the base tables.
+
+    Currently: v_depth_charts unions the pre-2025 weekly table and the 2025+
+    daily table with normalized column names and a `source` tag so consumers
+    can write one cross-season query instead of a 25-line UNION.
+
+    No-op if the required base tables aren't all present.
+    """
+    have = {
+        row[0]
+        for row in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main'"
+        ).fetchall()
+    }
+    if not {"depth_charts", "depth_charts_2025"}.issubset(have):
+        return
+
+    print("  Creating views...", end=" ", flush=True)
+    conn.execute("DROP VIEW IF EXISTS v_depth_charts")
+    conn.execute("""
+        CREATE VIEW v_depth_charts AS
+        SELECT
+            season,
+            CAST(week AS INTEGER)                     AS week,
+            NULL::VARCHAR                             AS dt,
+            club_code                                 AS team,
+            player_gsis_id,
+            NULL::VARCHAR                             AS player_espn_id,
+            position,
+            depth_position                            AS pos_abb,
+            TRY_CAST(depth_team AS INTEGER)           AS depth_rank,
+            formation,
+            NULL::VARCHAR                             AS pos_grp,
+            'legacy'                                  AS source
+        FROM depth_charts
+        UNION ALL
+        SELECT
+            CAST(strftime(CAST(dt AS TIMESTAMP), '%Y') AS INTEGER) AS season,
+            NULL::INTEGER                             AS week,
+            dt,
+            team,
+            player_gsis_id,
+            player_espn_id,
+            pos_abb                                   AS position,
+            pos_abb,
+            pos_rank                                  AS depth_rank,
+            CASE
+                WHEN pos_grp = 'Special Teams' THEN 'Special Teams'
+                WHEN pos_grp LIKE 'Base%'      THEN 'Defense'
+                ELSE 'Offense'
+            END                                       AS formation,
+            pos_grp,
+            'v2025'                                   AS source
+        FROM depth_charts_2025
+    """)
+    print("done")
+
+
 def check_integrity(conn, dry_run=False):
     """Check for orphan records in game_stats/season_stats."""
     if dry_run:
@@ -425,6 +491,11 @@ def run(table_configs, args, title="nflverse DB"):
     conn = duckdb.connect(str(output_db))
 
     try:
+        # Drop views up front so full_replace's DROP TABLE doesn't hit
+        # DuckDB's catalog dependency check. Recreated at the end.
+        if not args.dry_run:
+            drop_views(conn)
+
         updated_season_stats = updated_game_stats = False
 
         for name in table_names:
@@ -452,6 +523,10 @@ def run(table_configs, args, title="nflverse DB"):
 
         if not args.dry_run:
             check_integrity(conn)
+            print()
+
+        if not args.dry_run:
+            create_views(conn)
             print()
 
     finally:

@@ -27,6 +27,12 @@ Comprehensive NFL player statistics database built from [nflverse](https://githu
 | **qbr** | 9,570 | 30 | ESPN Total QBR (2006-2023) |
 | **play_by_play** | 1,279,628 | 372 | Every NFL play (1999-2025) |
 
+### Views
+
+| View | Unions | Purpose |
+|------|--------|---------|
+| **`v_depth_charts`** | `depth_charts` + `depth_charts_2025` | Cross-schema composite — query depth charts across the 2025 schema change with a single normalized column set. See the [`v_depth_charts` section](#view-v_depth_charts-composite-across-schemas) for the column map, caveats, and an example query. |
+
 ---
 
 ## Schema Overview
@@ -798,6 +804,56 @@ Daily depth chart positions for 2025+ season. **Different schema from `depth_cha
 - No `formation`, `depth_position`, or `elias_id` columns
 - Includes `player_espn_id` for direct ESPN joins
 - Position info split into `pos_grp`/`pos_name`/`pos_abb` instead of `position`/`depth_position`
+
+---
+
+### View: `v_depth_charts` (composite across schemas)
+
+nflverse changed the depth-chart model in 2025 — pre-2025 is **weekly** with a coarse 1/2/3 depth and lives in `depth_charts`; 2025+ is **daily** with a 1–15 depth and lives in `depth_charts_2025`. Most consumers want one query path that spans both, so `v_depth_charts` is a DuckDB view that UNIONs both base tables with normalized column names and a `source` tag for provenance.
+
+**Rows:** 1,345,686 (869,185 legacy + 476,501 v2025)
+
+| Column | Type | Legacy source | 2025 source | Notes |
+|--------|------|---------------|-------------|-------|
+| `season` | BIGINT | `season` | derived from `dt` | Year extracted from the 2025 timestamp |
+| `week` | INTEGER | `week` | `NULL` | 2025 has no NFL week — daily grain |
+| `dt` | VARCHAR | `NULL` | `dt` | ISO 8601 timestamp; only populated for 2025+ |
+| `team` | VARCHAR | `club_code` | `team` | Legacy's `club_code` aliased |
+| `player_gsis_id` | VARCHAR | `player_gsis_id` | `player_gsis_id` | — |
+| `player_espn_id` | VARCHAR | `NULL` | `player_espn_id` | Only 2025 carries it |
+| `position` | VARCHAR | `position` (e.g. "WR") | `pos_abb` (e.g. "LWR") | Legacy keeps general position; 2025 has no equivalent — uses the slot-specific abbreviation as the closest analog |
+| `pos_abb` | VARCHAR | `depth_position` | `pos_abb` | Slot-specific (e.g. "RCB", "LDE") |
+| `depth_rank` | BIGINT | `depth_team` cast to INTEGER (1/2/3) | `pos_rank` (1–15) | Unified type. Filter `depth_rank <= 3` if you want legacy-comparable data |
+| `formation` | VARCHAR | `formation` | derived from `pos_grp` | Collapsed to `Offense` / `Defense` / `Special Teams` |
+| `pos_grp` | VARCHAR | `NULL` | `pos_grp` | 2025's raw personnel/formation label (e.g. "3WR 1TE", "Base 4-3 D") — richer than the 3-valued `formation`, kept for callers who want it |
+| `source` | VARCHAR | `'legacy'` | `'v2025'` | Provenance tag |
+
+**Caveats (important to know before querying):**
+- `week` is `NULL` for 2025+ rows. If your query filters on `week`, add `OR source = 'v2025'` or pick a date-based filter instead.
+- `depth_rank` has different coverage on each side: legacy only has 1/2/3; 2025 goes to 15. A filter like `WHERE depth_rank = 5` only returns 2025 rows.
+- `position` is lossy for 2025 (the slot-specific abbreviation stands in for a general position column that doesn't exist there). Use `pos_abb` when you want slot-level accuracy.
+- 2025 is **daily**, so a single `(team, season=2025, depth_rank=1, position='QB')` query may return multiple players because the depth chart changed over the course of the year. If you want point-in-time data, filter by `dt`.
+
+**Example: primary QB for a team across 2023–2025**
+
+```sql
+-- Returns one row per legacy season (weekly depth chart row-count aside),
+-- and multiple rows for 2025 if the starter changed over the year.
+SELECT DISTINCT v.source, v.season, v.team, p.display_name
+FROM v_depth_charts v
+JOIN players p ON p.player_gsis_id = v.player_gsis_id
+WHERE v.team = 'KC' AND v.depth_rank = 1
+  AND (v.position = 'QB' OR v.pos_abb = 'QB')
+  AND v.season BETWEEN 2023 AND 2025
+ORDER BY v.season, v.source;
+```
+
+**When to skip the view and query the base tables:**
+- Daily point-in-time queries for 2025+: use `depth_charts_2025` directly so you keep the `dt` semantics without the `week = NULL` workaround.
+- Deep-depth queries (rank 4+): only 2025+ has this data; just query `depth_charts_2025`.
+- Legacy-era weekly regular-season snapshot queries: the view works fine, but querying `depth_charts` directly is slightly cheaper (no UNION ALL).
+
+The view is regenerated automatically on every build (`pipeline.run` → `create_views`).
 
 ---
 
