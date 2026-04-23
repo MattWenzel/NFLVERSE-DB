@@ -705,14 +705,110 @@ If the new table should participate in a view (`v_depth_charts` style), add the 
 
 ---
 
-## 12. Current state summary
+## 12. Completeness vs. data reality
+
+A consumer (the NFL_AI_AGENT LLM) observed that a query — "top 2024 linebackers by defensive snaps, with season defensive stats" — returned NULL stats for ~15% of rows on first try, finding the data only on retry via a different join path. The hypothesis was ID-stitching breakage: `snap_counts.player_pfr_id → players.player_gsis_id → season_stats` losing rows somewhere.
+
+We measured. The hypothesis was wrong, but the measurement surfaced two real gaps the consumer would otherwise hit silently, plus one class of "missing data" that's a real upstream reality (not a bug).
+
+### 12.1 The hub is stitched. Don't chase it.
+
+For the exact failing query, measured against the FK-bearing build:
+
+| Stage | Count | Rate |
+|---|---|---|
+| Distinct PFR IDs in `snap_counts` 2024 REG LB | 315 | — |
+| Matched in `players` on `player_pfr_id` | 315 | 100% |
+| With non-NULL `player_gsis_id` | 315 | 100% |
+| With a `season_stats` row for 2024 REG | 300 | 95.2% |
+
+100% of PFR IDs from the child table reach `players` with a populated GSIS. No backfill gap. **If a consumer query returns NULL stats and retry finds them via a different path, the retry difference isn't a stitching bug — it's usually a missing aggregate row (gap 12.2) or missing source stats for that player (gap 12.4).**
+
+When you touch the code here, don't chase ghost stitching problems. Re-run the §9.2 orphan sweep; if it's 0, the hub is fine.
+
+### 12.2 POST-season `season_stats` was absent — now downloaded + augmented
+
+The `season_stats` table was originally sourced only from `stats_player_reg_{year}.parquet`. nflverse also publishes `stats_player_post_{year}.parquet` under the same `stats_player` release tag, and the original config simply never downloaded them. Result: zero POST rows in `season_stats`, while `game_stats` carried every playoff week back to 2002.
+
+Two changes close this:
+
+1. **Download spec extended** (`scripts/download.py`). The `season_stats` entry now uses a `patterns` list covering both REG and POST parquets. Adds ~27 small files (<5 MB total).
+2. **`_fetch_season_stats` loads both** (`scripts/build_db.py`). `pd.concat([reg, post])` before the usual rename + cleanup.
+
+After (1) + (2), every (player, season, POST) combination nflverse publishes is in `season_stats` with full ratios (passer_rating, fg_pct, completion_percentage, etc.) populated from the source feed.
+
+Anything still missing — combinations that exist in `game_stats` but not in either nflverse feed — is handled by `compute_missing_season_stats(conn)` (`scripts/pipeline.py`):
+
+- Iterates `(player_gsis_id, season, season_type)` combinations in `game_stats` not in `season_stats`.
+- For each, SUMs the additive weekly columns, takes `arg_max(team, week)` for `recent_team`, `COUNT(DISTINCT game_id)` for `games`, `MAX(fg_long)` for the longest FG.
+- **Ratio columns are left NULL** (see lists `_SS_NULL_RATIO_COLS` and `_SS_NULL_LIST_COLS` in `pipeline.py`). Ratios cannot be summed from components in a single SQL aggregate without recomputing; consumers can recompute from the additive components (e.g. `passing_yards / attempts`, `fg_made / fg_att`).
+- Safety: the classification sanity-check raises if a new column lands in either table without being added to one of the `_SS_*` lists. Build fails loudly rather than silently mis-aggregating.
+
+Current effect: nflverse POST files cover all 12K+ combinations, and the augmentation typically inserts 0-1 extra rows. The function is a safety net — not a primary data source — but it's load-bearing if nflverse ever drops a player from the pre-aggregated feed.
+
+**Runs on every build.** Cheap no-op when the gap is already closed. No `--augment` flag.
+
+### 12.3 Preflight ID merge prevents duplicate NULL-GSIS stubs
+
+Child tables (combine, snap_counts, pfr_advanced, draft_picks, qbr, depth_charts_2025) stub missing FK-target rows into `players` via their declared `stub_source` maps. When a child has a PFR or ESPN ID that isn't in `players`, a NULL-GSIS stub is created.
+
+Some of those stubs are legitimate (pre-GSIS prospects, combine-only players, ESPN-only QBR entries without a known GSIS). But many are **duplicates** — the same player already exists in `players` under their GSIS with the same display name, just with the PFR/ESPN column still NULL. Without intervention these compete for future joins and clutter the registry.
+
+Fix: `_preflight_id_merges(players_df)` in `scripts/build_db.py`. Runs inside `_fetch_players` after the bridge enrichment, **before any child INSERT**. For each PFR/ESPN-stubbing source:
+
+1. Read the raw parquet; extract `(id, display_name, position, team)` tuples for IDs not already in `players[target_col]`.
+2. For each candidate ID, look for an existing GSIS-bearing row in `players` with `target_col IS NULL` and a matching `display_name`.
+3. Position tiebreaker: candidate and donor must match exactly or one side must be NULL. A strict position mismatch rejects the match (guard against two different players sharing a name).
+4. Team tiebreaker: used only when there's still >1 viable donor. Prefer donors with matching `latest_team`.
+5. If exactly 1 viable donor remains, attach the candidate's ID to the donor row. Mark the donor as consumed so later candidates don't re-use it.
+
+Why pandas-side, not SQL-side: DuckDB treats `UPDATE` on a row with FK-pointing children as `DELETE+INSERT` internally, and `DELETE` is blocked by the FK. By running the merge before any child has been INSERTed (i.e. before any FK-child reference exists), we avoid the restriction entirely.
+
+Sanity cap: if the match logic would merge more than 500 candidates, the function raises — the measured ceiling is ~65 and a 10× jump indicates a broken safety filter.
+
+Current effect: ~65 child IDs attached to existing GSIS-bearing players per build (36 combine, 19 draft_picks, 10 snap_counts). `players` NULL-GSIS count drops from ~605 to ~540 as a result. No rows lost — the IDs move from would-be-stubs into existing GSIS rows.
+
+### 12.4 "snap_counts row but no game_stats row" is real data, not a bug
+
+Some players appear in `snap_counts` (on field for at least one play) but have no `game_stats` row — they simply didn't record any charted stat (tackle, INT, sack, PD, pass attempt, carry). Most have 0 defensive/offensive snaps; they're depth-chart entries or pure special-teams contributors who were active but not involved in the chart-worthy play types tracked in `game_stats`.
+
+These players **will not appear** in `season_stats` either (there's no weekly data to aggregate from). If a consumer LEFT JOINs `snap_counts → season_stats` and sees NULL stats for a player with 0 offensive + 0 defensive snaps, **that's not a stitching bug** — the player truly recorded no stats. No retry will find them.
+
+How to filter in a leaderboard query to avoid this confusion:
+```sql
+-- Top LBs 2024 REG by defensive snaps, only players with >0 snaps
+SELECT p.display_name, sc.defense_snaps, ss.def_tackles_solo
+FROM snap_counts sc
+JOIN players p ON sc.player_pfr_id = p.player_pfr_id
+LEFT JOIN season_stats ss
+  ON ss.player_gsis_id = p.player_gsis_id
+  AND ss.season = sc.season
+  AND ss.season_type = 'REG'
+WHERE sc.season = 2024 AND sc.game_type = 'REG'
+  AND sc.position LIKE '%LB%'
+  AND sc.defense_snaps > 0      -- excludes depth-chart-only entries
+ORDER BY sc.defense_snaps DESC;
+```
+
+### 12.5 Validation invariants after every build
+
+`run()` prints these; they should always hold:
+
+- `Augmenting season_stats from game_stats... N rows inserted (gap was N, now 0)` — gap **always** closes to 0. If it doesn't, either the aggregation failed (raises) or a new column isn't classified (raises earlier).
+- `Checking referential integrity... ok (0 orphan records)` — unchanged by the completeness work.
+- `preflight ID-merge: +N child IDs attached to existing players` — N typically 40-100. A jump >500 trips the safety cap.
+- No duplicate `player_gsis_id` in `players` (the UNIQUE constraint enforces this at INSERT time).
+
+## 13. Current state summary
 
 - **13 tables + 1 view** (`v_depth_charts`): see `DATABASE.md`.
 - **60 foreign keys**: every edge the consumer (NFL_AI_AGENT) asked for, 0 orphans.
-- **Full rebuild time**: ~2 min DuckDB + ~2-3 min optional SQLite mirror. `build_db.py --all` ≈ 1m15s (includes recovery), `build_db.py --pbp` ≈ 52s, `build_sqlite.py` ≈ 2m30s.
+- **Full rebuild time**: ~2 min DuckDB + ~2-3 min optional SQLite mirror. `build_db.py --all` ≈ 1m15s (includes recovery + POST-augment), `build_db.py --pbp` ≈ 52s, `build_sqlite.py` ≈ 2m30s.
 - **File sizes**: DuckDB ~940 MB, SQLite (optional) ~2.5 GB.
-- **Players registry size**: ~25,000 rows (includes ~700 cross-referenced stubs beyond nflverse's primary parquet).
+- **Players registry size**: ~25,000 rows (includes ~700 cross-referenced stubs beyond nflverse's primary parquet). ~540 rows have NULL GSIS (pre-GSIS historical, combine-only prospects).
+- **`season_stats` row count**: ~61,600 (REG ~49,515 + POST ~12,074). POST was previously absent; now covered via nflverse POST files + a safety-net aggregation from `game_stats`.
 - **Per-rebuild GSIS recoveries**: ~8,200 rows (7,100 draft_picks pre-1995 HoF picks + 1,050 depth_charts_2025 practice-squad + ~50 scattered). Without recovery, those rows would have NULL gsis; with it, they join to the correct `players` record.
+- **Per-rebuild preflight merges**: ~65 child PFR/ESPN IDs attached to existing players instead of becoming duplicate stubs.
 
 To rebuild from scratch (assumes parquets are already in `data/raw/`):
 ```bash

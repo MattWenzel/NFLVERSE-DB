@@ -187,9 +187,11 @@ Per CC-BY-4.0 §3(a)(1)(B), these build scripts modify the source data in the fo
 - Two ID columns whose pandas-inferred types were lossy are coerced to `VARCHAR`: `qbr.player_espn_id` (was BIGINT) and `player_ids.espn_id` (was DOUBLE with null handling producing float artifacts).
 - Obvious junk ID sentinels (`''`, `'0'`, `'XX-0000001'` etc.) that nflverse uses as "no ID" placeholders for pre-2001 data are normalized to NULL. Rows are preserved; only the invalid reference column is cleared.
 - The `players` registry is enriched beyond nflverse's primary `players.parquet` to cover every ID referenced anywhere in the DB. Stub rows come from the `player_ids` bridge and from each child table's own metadata (name + position + team + school). This is what lets every declared foreign key resolve to an existing `players` row.
+- Before children stub NULL-GSIS rows, a preflight pass reads each child source and attaches any PFR/ESPN IDs that uniquely name-match an existing GSIS-bearing player — so one person doesn't end up with a GSIS row and a separate NULL-GSIS stub under a different ID keyspace. See `docs/INGESTION.md` §12.3.
 - Sixty foreign-key constraints are declared at table-creation time. Consumers can auto-derive a join graph by querying `duckdb_constraints()` (see `docs/DATABASE.md`).
+- `season_stats` includes both REG and POST rows. Per-season aggregates come from nflverse's `stats_player_reg_{year}` and `stats_player_post_{year}` files. A safety-net pass (`compute_missing_season_stats` in `scripts/pipeline.py`) fills any (player, season, type) combination present in `game_stats` but missing from the downloaded aggregates by SUMming the weekly rows. Derived rows leave ratio columns (`passer_rating`, `fg_pct`, etc.) NULL — consumers recompute from the additive components. See `docs/INGESTION.md` §12.2.
 
-Numeric stat values are not renamed, recalculated, or otherwise transformed — the data itself remains as nflverse publishes it.
+Individual numeric stat values from nflverse's source feeds are not renamed, recalculated, or otherwise transformed — the SUM-of-weeks augmentation above only creates rows that the nflverse pre-aggregated feed omits.
 
 ### If you redistribute a built database
 

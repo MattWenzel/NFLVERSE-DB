@@ -751,6 +751,219 @@ def update_full_replace(conn, config, dry_run=False):
 # Post-update steps
 # ---------------------------------------------------------------------------
 
+# Classification of season_stats columns for the POST-season augmentation.
+# Populated from `DESCRIBE season_stats` (as of 2026-04). New columns added
+# to either table later must be added here too, or the sanity check in
+# compute_missing_season_stats() raises. That's deliberate — the build
+# should fail loudly rather than silently mis-aggregating a new column.
+_SS_SUM_COLS = [
+    # Passing
+    "completions", "attempts", "passing_yards", "passing_tds",
+    "passing_interceptions", "sacks_suffered", "sack_yards_lost",
+    "sack_fumbles", "sack_fumbles_lost", "passing_air_yards",
+    "passing_yards_after_catch", "passing_first_downs", "passing_epa",
+    "passing_2pt_conversions",
+    # Rushing
+    "carries", "rushing_yards", "rushing_tds", "rushing_fumbles",
+    "rushing_fumbles_lost", "rushing_first_downs", "rushing_epa",
+    "rushing_2pt_conversions",
+    # Receiving
+    "receptions", "targets", "receiving_yards", "receiving_tds",
+    "receiving_fumbles", "receiving_fumbles_lost", "receiving_air_yards",
+    "receiving_yards_after_catch", "receiving_first_downs", "receiving_epa",
+    "receiving_2pt_conversions",
+    # Special teams / defense / returns
+    "special_teams_tds",
+    "def_tackles_solo", "def_tackles_with_assist", "def_tackle_assists",
+    "def_tackles_for_loss", "def_tackles_for_loss_yards",
+    "def_fumbles_forced", "def_sacks", "def_sack_yards", "def_qb_hits",
+    "def_interceptions", "def_interception_yards", "def_pass_defended",
+    "def_tds", "def_fumbles", "def_safeties", "misc_yards",
+    "fumble_recovery_own", "fumble_recovery_yards_own",
+    "fumble_recovery_opp", "fumble_recovery_yards_opp",
+    "fumble_recovery_tds", "penalties", "penalty_yards",
+    "punt_returns", "punt_return_yards",
+    "kickoff_returns", "kickoff_return_yards",
+    # Kicking
+    "fg_made", "fg_att", "fg_missed", "fg_blocked",
+    "fg_made_0_19", "fg_made_20_29", "fg_made_30_39", "fg_made_40_49",
+    "fg_made_50_59", "fg_made_60_",
+    "fg_missed_0_19", "fg_missed_20_29", "fg_missed_30_39",
+    "fg_missed_40_49", "fg_missed_50_59", "fg_missed_60_",
+    "fg_made_distance", "fg_missed_distance", "fg_blocked_distance",
+    "pat_made", "pat_att", "pat_missed", "pat_blocked",
+    "gwfg_made", "gwfg_att", "gwfg_missed", "gwfg_blocked",
+    # Fantasy
+    "fantasy_points", "fantasy_points_ppr",
+]
+_SS_MAX_COLS = ["fg_long"]
+# Ratios / percentages — cannot be summed. Left NULL in derived rows;
+# consumers compute from components (e.g. completion% = completions/attempts).
+_SS_NULL_RATIO_COLS = [
+    "passing_cpoe", "pacr", "racr", "target_share", "air_yards_share",
+    "wopr", "fg_pct", "pat_pct",
+]
+# VARCHAR per-game list columns (e.g. "32;45;28"). Not meaningfully aggregable
+# without consumer-specific semantics; leave NULL.
+_SS_NULL_LIST_COLS = [
+    "fg_made_list", "fg_missed_list", "fg_blocked_list", "gwfg_distance_list",
+]
+# Metadata: take any representative value within the group (they're constant
+# per player).
+_SS_METADATA_COLS = [
+    "player_name", "player_display_name", "position", "position_group",
+    "headshot_url",
+]
+# Grouping keys
+_SS_KEY_COLS = ["player_gsis_id", "season", "season_type"]
+
+
+def compute_missing_season_stats(conn, dry_run=False):
+    """Augment season_stats with derived aggregates for (player, season, type)
+    combinations that exist in game_stats but are missing from season_stats.
+
+    nflverse's season-level feed (stats_player_reg/post) sometimes omits
+    players whose weekly rows exist in stats_player_week — most visibly 12K+
+    postseason rows across 2006-2025. We rebuild those aggregates by summing
+    the weekly game_stats rows so consumers get complete postseason leaderboards.
+
+    Ratio columns (passer_rating, fg_pct, etc.) are left NULL. Consumers can
+    compute them from the additive components. See docs/INGESTION.md §13.
+    """
+    if dry_run:
+        return 0
+    if not (_table_exists(conn, "season_stats") and _table_exists(conn, "game_stats")):
+        return 0
+
+    # Sanity check: every season_stats column must appear in exactly one of
+    # our classification lists. If a new column lands in either table without
+    # an explicit classification, fail loudly.
+    ss_cols = _existing_columns(conn, "season_stats")
+    classified = (
+        set(_SS_SUM_COLS) | set(_SS_MAX_COLS) | set(_SS_NULL_RATIO_COLS)
+        | set(_SS_NULL_LIST_COLS) | set(_SS_METADATA_COLS) | set(_SS_KEY_COLS)
+        | {"games", "recent_team"}  # handled specially below
+    )
+    unclassified = ss_cols - classified
+    if unclassified:
+        raise RuntimeError(
+            f"compute_missing_season_stats: unclassified season_stats columns "
+            f"{sorted(unclassified)} — add them to _SS_SUM_COLS / _SS_MAX_COLS / "
+            f"_SS_NULL_RATIO_COLS / _SS_NULL_LIST_COLS / _SS_METADATA_COLS."
+        )
+    classified_extra = classified - ss_cols - {"games", "recent_team"}
+    if classified_extra:
+        raise RuntimeError(
+            f"compute_missing_season_stats: classified columns not in season_stats: "
+            f"{sorted(classified_extra)} — remove from the lists."
+        )
+
+    gs_cols = _existing_columns(conn, "game_stats")
+
+    print("  Augmenting season_stats from game_stats...", end=" ", flush=True)
+
+    # Rows present in game_stats but NOT in season_stats. Non-NULL GSIS only —
+    # a NULL-GSIS game_stats row can't be aggregated against a specific player.
+    gap_before = conn.execute("""
+        SELECT COUNT(*) FROM (
+            SELECT DISTINCT player_gsis_id, season, season_type FROM game_stats
+            WHERE player_gsis_id IS NOT NULL
+            EXCEPT
+            SELECT DISTINCT player_gsis_id, season, season_type FROM season_stats
+            WHERE player_gsis_id IS NOT NULL
+        )
+    """).fetchone()[0]
+
+    if gap_before == 0:
+        print("no gaps (0 rows)")
+        return 0
+
+    # Build the SELECT list in the exact column order of season_stats so the
+    # INSERT lines up by position.
+    ss_ordered = [r[0] for r in conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema='main' AND table_name='season_stats' "
+        "ORDER BY ordinal_position"
+    ).fetchall()]
+
+    select_exprs = []
+    for c in ss_ordered:
+        if c in _SS_KEY_COLS:
+            select_exprs.append(f'g."{c}"')
+        elif c == "games":
+            # Count distinct games played. game_id is NULL in 1999-2021 data —
+            # fall back to COUNT(DISTINCT week) for those seasons.
+            select_exprs.append(
+                "COALESCE(COUNT(DISTINCT g.game_id), COUNT(DISTINCT g.week))"
+                " AS games"
+            )
+        elif c == "recent_team":
+            # Last team by week. arg_max returns the team value from the row
+            # with max week in the group.
+            select_exprs.append('arg_max(g."team", g."week") AS recent_team')
+        elif c in _SS_METADATA_COLS:
+            # Metadata is constant per player, but use MAX to pick a
+            # deterministic value if any rows disagree (e.g. mid-season
+            # position change).
+            if c in gs_cols:
+                select_exprs.append(f'MAX(g."{c}") AS "{c}"')
+            else:
+                select_exprs.append(f'NULL::VARCHAR AS "{c}"')
+        elif c in _SS_SUM_COLS:
+            if c in gs_cols:
+                select_exprs.append(f'SUM(g."{c}") AS "{c}"')
+            else:
+                select_exprs.append(f'NULL AS "{c}"')
+        elif c in _SS_MAX_COLS:
+            if c in gs_cols:
+                select_exprs.append(f'MAX(g."{c}") AS "{c}"')
+            else:
+                select_exprs.append(f'NULL AS "{c}"')
+        elif c in _SS_NULL_RATIO_COLS or c in _SS_NULL_LIST_COLS:
+            select_exprs.append(f'NULL AS "{c}"')
+        else:
+            raise RuntimeError(f"unreachable: {c} classified but no handler")
+
+    col_list = ", ".join(f'"{c}"' for c in ss_ordered)
+    select_sql = ",\n        ".join(select_exprs)
+
+    try:
+        conn.begin()
+        conn.execute(f"""
+            INSERT INTO season_stats ({col_list})
+            SELECT
+                {select_sql}
+            FROM game_stats g
+            WHERE g.player_gsis_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM season_stats ss
+                  WHERE ss.player_gsis_id = g.player_gsis_id
+                    AND ss.season         = g.season
+                    AND ss.season_type    = g.season_type
+              )
+            GROUP BY g.player_gsis_id, g.season, g.season_type
+        """)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"ERROR: {e}")
+        return 0
+
+    gap_after = conn.execute("""
+        SELECT COUNT(*) FROM (
+            SELECT DISTINCT player_gsis_id, season, season_type FROM game_stats
+            WHERE player_gsis_id IS NOT NULL
+            EXCEPT
+            SELECT DISTINCT player_gsis_id, season, season_type FROM season_stats
+            WHERE player_gsis_id IS NOT NULL
+        )
+    """).fetchone()[0]
+
+    inserted = gap_before - gap_after
+    print(f"{inserted:,} rows inserted (gap was {gap_before:,}, now {gap_after:,})")
+    return inserted
+
+
 def backfill_season_stats_team(conn, years=None, dry_run=False):
     """Backfill season_stats.recent_team from game_stats (most common team per player-season)."""
     print("  Backfilling season_stats.recent_team from game_stats...", end=" ", flush=True)
@@ -1060,6 +1273,14 @@ def run(table_configs, args, title="nflverse DB"):
 
         if updated_season_stats and updated_game_stats:
             backfill_season_stats_team(conn, years=years, dry_run=args.dry_run)
+            print()
+
+        # Augment season_stats with derived rows for (player, season, type)
+        # combos that exist in game_stats but not season_stats. See
+        # docs/INGESTION.md §13. Runs on every build — it's a no-op when the
+        # gap is already closed.
+        if not args.dry_run and _table_exists(conn, "season_stats") and _table_exists(conn, "game_stats"):
+            compute_missing_season_stats(conn)
             print()
 
         if not args.dry_run and args.all:

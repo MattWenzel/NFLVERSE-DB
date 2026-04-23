@@ -96,6 +96,213 @@ def _read_parquets(folder, pattern, years):
     return pd.concat(dfs, ignore_index=True)
 
 
+def _merge_candidates(players_df, cand_df, id_col, target_col, name_col,
+                      pos_col=None, team_col=None, label=""):
+    """Attach candidate IDs from a child source to existing GSIS-bearing rows
+    in players_df by matching on display_name (with optional position / team
+    tiebreakers for ambiguity).
+
+    A "candidate" is an ID from cand_df that's NOT already in players_df[target_col]
+    — i.e. a would-be stub. If a GSIS-bearing player with the same display_name
+    exists with target_col IS NULL, we attach the candidate's ID to that row,
+    turning a future NULL-GSIS stub into enrichment of a known player.
+
+    Skipped when: no donor; multiple donors that tiebreakers can't resolve;
+    donor's position is populated AND explicitly different from candidate's
+    (guards against merging different players who share a name).
+    """
+    if cand_df.empty or id_col not in cand_df.columns or name_col not in cand_df.columns:
+        return players_df, 0
+
+    # Distinct candidates whose ID isn't already known to players
+    existing = set(players_df[target_col].dropna())
+    cand = cand_df[[c for c in [id_col, name_col, pos_col, team_col] if c]].copy()
+    cand = cand[cand[id_col].notna() & cand[name_col].notna()]
+    cand = cand.drop_duplicates(subset=[id_col])
+    cand = cand[~cand[id_col].isin(existing)]
+    if cand.empty:
+        return players_df, 0
+
+    # Donor pool: GSIS-bearing rows with target_col NULL and a display_name.
+    donor_mask = (
+        players_df["player_gsis_id"].notna()
+        & players_df[target_col].isna()
+        & players_df["display_name"].notna()
+    )
+    donors_all = players_df[donor_mask]
+    if donors_all.empty:
+        return players_df, 0
+
+    # Group donors by display_name once — O(candidates * |donors with that name|).
+    donors_by_name = {
+        name: grp for name, grp in donors_all.groupby("display_name")
+    }
+
+    used_donors = set()
+    merges = 0
+    for _, row in cand.iterrows():
+        name = row[name_col]
+        donors = donors_by_name.get(name)
+        if donors is None:
+            continue
+        # Drop any donor already consumed by an earlier candidate.
+        if used_donors:
+            donors = donors[~donors.index.isin(used_donors)]
+        if donors.empty:
+            continue
+
+        # Position tiebreaker / safety filter. If the candidate declares a
+        # position and the donor declares one, they must match exactly OR
+        # one side is NULL. Donors whose position outright conflicts are
+        # excluded to guard against merging different people with the same
+        # name.
+        cand_pos = row[pos_col] if pos_col else None
+        if cand_pos and "position" in donors.columns:
+            pos_ok = donors["position"].isna() | (donors["position"] == cand_pos)
+            donors = donors[pos_ok]
+            if donors.empty:
+                continue
+
+        # Team tiebreaker — used only when there's still ambiguity.
+        if len(donors) > 1 and team_col:
+            cand_team = row[team_col]
+            if cand_team and "latest_team" in donors.columns:
+                team_matches = donors[donors["latest_team"] == cand_team]
+                if len(team_matches) >= 1:
+                    donors = team_matches
+
+        if len(donors) != 1:
+            continue  # ambiguous — skip rather than risk a bad merge
+
+        donor_idx = donors.index[0]
+        if pd.isna(players_df.at[donor_idx, target_col]):
+            players_df.at[donor_idx, target_col] = row[id_col]
+            used_donors.add(donor_idx)
+            merges += 1
+
+    if merges:
+        print(f"  preflight-merged {merges} {target_col} IDs from {label}")
+    return players_df, merges
+
+
+def _preflight_id_merges(players_df):
+    """Read each PFR/ESPN-stubbing child source, attach their IDs to existing
+    GSIS-bearing players by name-match before any child INSERT runs.
+
+    Runs at the pandas layer inside _fetch_players so the merges happen before
+    any FK from a child to players exists — DuckDB would otherwise block an
+    UPDATE on players once children reference a row.
+
+    Measured ceiling: ~91 merges across all sources. If this grows past ~500,
+    the name-match is over-eager; investigate.
+    """
+    total = 0
+
+    combine_path = RAW_DATA_PATH / "combine" / "combine.parquet"
+    if combine_path.exists():
+        df = pd.read_parquet(combine_path)[["pfr_id", "player_name", "pos"]].rename(
+            columns={"pfr_id": "player_pfr_id"}
+        )
+        df["player_pfr_id"] = clean_id_series(df["player_pfr_id"])
+        players_df, n = _merge_candidates(
+            players_df, df, "player_pfr_id", "player_pfr_id",
+            "player_name", pos_col="pos", label="combine",
+        )
+        total += n
+
+    dp_path = RAW_DATA_PATH / "draft_picks" / "draft_picks.parquet"
+    if dp_path.exists():
+        df = pd.read_parquet(dp_path)[["pfr_player_id", "pfr_player_name", "position"]].rename(
+            columns={"pfr_player_id": "player_pfr_id"}
+        )
+        df["player_pfr_id"] = clean_id_series(df["player_pfr_id"])
+        players_df, n = _merge_candidates(
+            players_df, df, "player_pfr_id", "player_pfr_id",
+            "pfr_player_name", pos_col="position", label="draft_picks",
+        )
+        total += n
+
+    sc_dir = RAW_DATA_PATH / "snap_counts"
+    if sc_dir.exists():
+        sc_dfs = []
+        for p in sorted(sc_dir.glob("snap_counts_*.parquet")):
+            sc_dfs.append(pd.read_parquet(p, columns=["pfr_player_id", "player", "position", "team"]))
+        if sc_dfs:
+            df = pd.concat(sc_dfs, ignore_index=True).rename(
+                columns={"pfr_player_id": "player_pfr_id"}
+            )
+            df["player_pfr_id"] = clean_id_series(df["player_pfr_id"])
+            players_df, n = _merge_candidates(
+                players_df, df, "player_pfr_id", "player_pfr_id",
+                "player", pos_col="position", team_col="team", label="snap_counts",
+            )
+            total += n
+
+    adv_dir = RAW_DATA_PATH / "pfr_advstats"
+    if adv_dir.exists():
+        adv_dfs = []
+        # Column names vary: pass uses (player, team, pfr_id) with no pos; rush/rec
+        # use (player, tm, pfr_id, pos). Normalize to (player, pfr_id, pos?, team?).
+        for stat_type in ["pass", "rush", "rec"]:
+            p = adv_dir / f"advstats_season_{stat_type}.parquet"
+            if not p.exists():
+                continue
+            sub = pd.read_parquet(p)
+            keep = [c for c in ("pfr_id", "player", "pos", "team", "tm") if c in sub.columns]
+            sub = sub[keep].copy()
+            if "tm" in sub.columns and "team" not in sub.columns:
+                sub = sub.rename(columns={"tm": "team"})
+            if "pos" not in sub.columns:
+                sub["pos"] = None
+            if "team" not in sub.columns:
+                sub["team"] = None
+            adv_dfs.append(sub)
+        if adv_dfs:
+            df = pd.concat(adv_dfs, ignore_index=True).rename(
+                columns={"pfr_id": "player_pfr_id"}
+            )
+            df["player_pfr_id"] = clean_id_series(df["player_pfr_id"])
+            players_df, n = _merge_candidates(
+                players_df, df, "player_pfr_id", "player_pfr_id",
+                "player", pos_col="pos", team_col="team", label="pfr_advanced",
+            )
+            total += n
+
+    qbr_path = RAW_DATA_PATH / "external" / "qbr-nfl-weekly.csv"
+    if qbr_path.exists():
+        df = pd.read_csv(qbr_path)[["player_id", "name_short", "team_abb"]]
+        df["player_id"] = to_string_id(df["player_id"])
+        df = df.rename(columns={"player_id": "player_espn_id"})
+        df["player_espn_id"] = clean_id_series(df["player_espn_id"])
+        # qbr is QB-only; name_short is the display name. No position column.
+        players_df, n = _merge_candidates(
+            players_df, df, "player_espn_id", "player_espn_id",
+            "name_short", team_col="team_abb", label="qbr",
+        )
+        total += n
+
+    dc25_path = RAW_DATA_PATH / "depth_charts" / "depth_charts_2025.parquet"
+    if dc25_path.exists():
+        df = pd.read_parquet(dc25_path)[["espn_id", "player_name", "pos_abb", "team"]].rename(
+            columns={"espn_id": "player_espn_id"}
+        )
+        df["player_espn_id"] = clean_id_series(df["player_espn_id"])
+        players_df, n = _merge_candidates(
+            players_df, df, "player_espn_id", "player_espn_id",
+            "player_name", pos_col="pos_abb", team_col="team", label="depth_charts_2025",
+        )
+        total += n
+
+    if total:
+        print(f"  preflight ID-merge: +{total} child IDs attached to existing players")
+    if total > 500:
+        raise RuntimeError(
+            f"preflight ID-merge attached {total} IDs — far above measured ceiling "
+            f"of ~91. Name-match safety filter may be broken."
+        )
+    return players_df
+
+
 def _raw_player_ids():
     """Read and clean the dynastyprocess db_playerids.csv bridge table."""
     df = pd.read_csv(RAW_DATA_PATH / "external" / "db_playerids.csv")
@@ -180,6 +387,11 @@ def _fetch_players(_years=None):
         _backfill("player_pfr_id", "pfr_id")
     if "espn_id" in pi.columns:
         _backfill("player_espn_id", "espn_id")
+
+    # Preflight-attach child PFR/ESPN IDs to existing GSIS-bearing players by
+    # name-match. Prevents duplicate NULL-GSIS stubs for players we already
+    # have under a different ID keyspace. See docs/INGESTION.md §13.
+    df = _preflight_id_merges(df)
 
     return df
 
@@ -306,7 +518,13 @@ def _fetch_game_stats(years):
 
 
 def _fetch_season_stats(years):
-    df = _read_parquets("stats_player", "stats_player_reg_{year}.parquet", years)
+    # Load REG and POST aggregates from nflverse. POST was previously missing
+    # from the pipeline — weekly data existed in game_stats but no season-level
+    # rows. Together they cover all season-type combinations nflverse publishes;
+    # compute_missing_season_stats() fills anything still left.
+    reg = _read_parquets("stats_player", "stats_player_reg_{year}.parquet", years)
+    post = _read_parquets("stats_player", "stats_player_post_{year}.parquet", years)
+    df = pd.concat([reg, post], ignore_index=True) if not post.empty else reg
     df = df.rename(columns={"player_id": "player_gsis_id"})
     if "player_gsis_id" in df.columns:
         df["player_gsis_id"] = clean_gsis_id_series(df["player_gsis_id"])

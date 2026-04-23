@@ -17,11 +17,11 @@ Both files carry the same schema, same 60 foreign keys, same indexes, and the sa
 
 | Table | Rows | Columns | Description |
 |-------|------|---------|-------------|
-| **players** | 24,356 | 39 | Master player registry (all positions) |
-| **player_ids** | 7,705 | 35 | Cross-platform ID mapping (ESPN, Yahoo, PFR, etc.) |
+| **players** | 24,992 | 39 | Master player registry (all positions) |
+| **player_ids** | 7,703 | 35 | Cross-platform ID mapping (ESPN, Yahoo, PFR, etc.) |
 | **games** | 7,276 | 46 | Schedule, scores, weather, betting, QB IDs |
-| **game_stats** | 475,626 | 115 | Weekly player stats (all position groups) |
-| **season_stats** | 49,489 | 113 | Aggregated season totals |
+| **game_stats** | 476,155 | 115 | Weekly player stats (all position groups) |
+| **season_stats** | 61,589 | 113 | Season totals — REG + POST. POST aggregates were originally absent; see `INGESTION.md` §12.2 for the downloaded-plus-augmented strategy. |
 | **draft_picks** | 12,670 | 36 | Historical NFL draft data + career stats |
 | **combine** | 8,649 | 18 | Scouting Combine results |
 | **snap_counts** | 276,948 | 16 | Weekly snap participation (2015-2025) |
@@ -173,7 +173,7 @@ WHERE q.season = 2023;
 
 Master registry of all NFL players with biographical and career information.
 
-**Rows:** 24,356 | **Years:** 1999-2025 | **Columns:** 39
+**Rows:** 24,992 | **Years:** 1999-2025 | **Columns:** 39
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -562,6 +562,8 @@ Aggregated season totals. Same stat columns as `game_stats` but summed across al
 **Note:** `season_stats.recent_team` is backfilled from `game_stats.team` (most common team per player-season); nflverse source data doesn't always populate it.
 
 **Note:** `season_stats` uses `gwfg_distance_list` (TEXT) instead of `game_stats`'s `gwfg_distance` (INTEGER).
+
+**Note:** `season_stats` carries both `REG` and `POST` rows. POST aggregates come primarily from nflverse's `stats_player_post_{year}.parquet`; a small safety-net pass (`compute_missing_season_stats` in `pipeline.py`) fills any (player, season, type) combination still present in `game_stats` but absent from the downloaded feed. Derived rows leave ratio columns (`passer_rating`, `fg_pct`, `completion_percentage`, etc.) NULL — consumers compute from the additive components. See `INGESTION.md` §12.2.
 
 **Indexes:**
 - `idx_season_stats_player_season` on `(player_gsis_id, season)`

@@ -39,7 +39,13 @@ DOWNLOAD_MAP = {
     },
     "season_stats": {
         "tag": "stats_player",
-        "pattern": "stats_player_reg_{year}.parquet",
+        # Both REG and POST aggregates from nflverse. POST was overlooked in
+        # the original config; without it we had zero season-level POST rows
+        # (visible as the 12K gap game_stats → season_stats).
+        "patterns": [
+            "stats_player_reg_{year}.parquet",
+            "stats_player_post_{year}.parquet",
+        ],
         "years": (YEAR_RANGE_START["season_stats"], CURRENT_YEAR),
     },
     "games": {
@@ -122,8 +128,9 @@ def get_files_for_table(table_name, years=None):
     spec = DOWNLOAD_MAP[table_name]
     results = []
 
-    if "pattern" in spec:
-        # Year-partitioned
+    if "pattern" in spec or "patterns" in spec:
+        # Year-partitioned. `patterns` (list) supports multiple files per
+        # year under the same release tag (e.g. REG + POST season stats).
         start, end = spec["years"]
         if years:
             file_years = [y for y in years if start <= y <= end]
@@ -132,11 +139,13 @@ def get_files_for_table(table_name, years=None):
 
         tag = spec["tag"]
         subfolder = spec.get("subfolder", tag)
+        patterns = spec.get("patterns") or [spec["pattern"]]
         for year in file_years:
-            filename = spec["pattern"].format(year=year)
-            url = f"{NFLVERSE_BASE}/{tag}/{filename}"
-            local = RAW_DATA_PATH / subfolder / filename
-            results.append((url, local))
+            for pat in patterns:
+                filename = pat.format(year=year)
+                url = f"{NFLVERSE_BASE}/{tag}/{filename}"
+                local = RAW_DATA_PATH / subfolder / filename
+                results.append((url, local))
     elif "url" in spec:
         # External source (single direct URL)
         subfolder = spec.get("subfolder", "external")
