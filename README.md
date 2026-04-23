@@ -48,7 +48,7 @@ See [Incremental updates](#incremental-updates) for pulling new seasons without 
 
 **Cross-schema view**: `v_depth_charts` UNIONs `depth_charts` (2001–2024 weekly) and `depth_charts_2025` (2025+ daily) into a single normalized schema — `season`, `week`, `team`, `position`, `pos_abb`, `depth_rank`, `formation`, plus a `source` tag. Columns the 2025 data doesn't natively carry (`season`, `week`, `position`) are derived honestly from what it does have (`dt`, `pos_abb`, a `games`-table lookup for week). See [`docs/DATABASE.md`](docs/DATABASE.md#view-v_depth_charts-composite-across-schemas) for the column map and an example query.
 
-See [`docs/DATABASE.md`](docs/DATABASE.md) for the full schema reference.
+See [`docs/DATABASE.md`](docs/DATABASE.md) for the full schema reference, and [`docs/INGESTION.md`](docs/INGESTION.md) for the ingestion-pipeline playbook (how to add a new season, how to add a new data source, failure modes and fixes, design principles).
 
 ## IDs and joins
 

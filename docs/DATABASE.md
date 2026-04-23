@@ -1,6 +1,8 @@
 # nflverse Database Documentation
 
-Comprehensive NFL player statistics database built from [nflverse](https://github.com/nflverse) data. Uses nflverse-native column names throughout (no custom renames).
+Comprehensive NFL player statistics database built from [nflverse](https://github.com/nflverse) data.
+
+> **Adding new data?** See [`INGESTION.md`](INGESTION.md) for the build pipeline's architecture, per-table update modes, FK declaration rules, and step-by-step guides for adding a new season or a new source table.
 
 ## Quick Stats
 
