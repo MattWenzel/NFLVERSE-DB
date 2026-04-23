@@ -341,19 +341,28 @@ def create_views(conn):
 
     print("  Creating views...", end=" ", flush=True)
     conn.execute("DROP VIEW IF EXISTS v_depth_charts")
-    # Deliberately excludes `week` and `position` — the legacy table has them
-    # and the 2025 table doesn't, and there's no way to honestly synthesize
-    # them on the 2025 side (week has no meaning in a daily grain; position
-    # would just duplicate pos_abb). Consumers wanting week-scoped or general-
-    # position data query `depth_charts` or `depth_charts_2025` directly.
+    # On the 2025 side, `season`, `week`, and `position` are derived:
+    #   - season: adjusted for the NFL calendar (Jan-Feb dates belong to the
+    #     prior year's season, not the calendar year).
+    #   - week: looked up from `games` by taking the latest game whose
+    #     gameday <= dt within the same NFL season. NULL for preseason (no
+    #     prior game yet). For playoff dates, the nearest regular-season
+    #     game's week is returned (DuckDB handles this via correlated
+    #     subquery fast enough — ~0.1s across 476K rows).
+    #   - position: slot-specific `pos_abb` values (LDE, RCB, WLB, ...) are
+    #     mapped to legacy-comparable general positions (DE, CB, OLB, ...)
+    #     so `WHERE position = 'CB'` returns both eras. Values that are
+    #     already general (QB, WR, TE, RB, ...) pass through unchanged.
     conn.execute("""
         CREATE VIEW v_depth_charts AS
         SELECT
             season,
+            CAST(week AS INTEGER)                     AS week,
             NULL::VARCHAR                             AS dt,
             club_code                                 AS team,
             player_gsis_id,
             NULL::VARCHAR                             AS player_espn_id,
+            position,
             depth_position                            AS pos_abb,
             TRY_CAST(depth_team AS INTEGER)           AS depth_rank,
             formation,
@@ -362,21 +371,46 @@ def create_views(conn):
         FROM depth_charts
         UNION ALL
         SELECT
-            CAST(strftime(CAST(dt AS TIMESTAMP), '%Y') AS INTEGER) AS season,
-            dt,
-            team,
-            player_gsis_id,
-            player_espn_id,
-            pos_abb,
-            pos_rank                                  AS depth_rank,
             CASE
-                WHEN pos_grp = 'Special Teams' THEN 'Special Teams'
-                WHEN pos_grp LIKE 'Base%'      THEN 'Defense'
+                WHEN EXTRACT(MONTH FROM CAST(dc.dt AS TIMESTAMP)) <= 2
+                    THEN CAST(strftime(CAST(dc.dt AS TIMESTAMP), '%Y') AS INTEGER) - 1
+                ELSE CAST(strftime(CAST(dc.dt AS TIMESTAMP), '%Y') AS INTEGER)
+            END                                       AS season,
+            (SELECT g.week FROM games g
+             WHERE g.season = CASE
+                        WHEN EXTRACT(MONTH FROM CAST(dc.dt AS TIMESTAMP)) <= 2
+                            THEN CAST(strftime(CAST(dc.dt AS TIMESTAMP), '%Y') AS INTEGER) - 1
+                        ELSE CAST(strftime(CAST(dc.dt AS TIMESTAMP), '%Y') AS INTEGER)
+                    END
+               AND CAST(g.gameday AS DATE) <= CAST(dc.dt AS DATE)
+             ORDER BY CAST(g.gameday AS DATE) DESC
+             LIMIT 1)::INTEGER                        AS week,
+            dc.dt,
+            dc.team,
+            dc.player_gsis_id,
+            dc.player_espn_id,
+            CASE
+                WHEN dc.pos_abb IN ('LT','RT')                   THEN 'T'
+                WHEN dc.pos_abb IN ('LG','RG')                   THEN 'G'
+                WHEN dc.pos_abb IN ('LDE','RDE')                 THEN 'DE'
+                WHEN dc.pos_abb IN ('LDT','RDT')                 THEN 'DT'
+                WHEN dc.pos_abb IN ('WLB','SLB','LOLB','ROLB')   THEN 'OLB'
+                WHEN dc.pos_abb IN ('RILB','LILB','MLB')         THEN 'ILB'
+                WHEN dc.pos_abb IN ('LCB','RCB')                 THEN 'CB'
+                WHEN dc.pos_abb IN ('NB','NCB')                  THEN 'NB'
+                WHEN dc.pos_abb = 'PK'                           THEN 'K'
+                ELSE dc.pos_abb
+            END                                       AS position,
+            dc.pos_abb,
+            dc.pos_rank                               AS depth_rank,
+            CASE
+                WHEN dc.pos_grp = 'Special Teams' THEN 'Special Teams'
+                WHEN dc.pos_grp LIKE 'Base%'      THEN 'Defense'
                 ELSE 'Offense'
             END                                       AS formation,
-            pos_grp,
+            dc.pos_grp,
             'v2025'                                   AS source
-        FROM depth_charts_2025
+        FROM depth_charts_2025 dc
     """)
     print("done")
 

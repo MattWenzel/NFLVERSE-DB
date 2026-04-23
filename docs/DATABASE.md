@@ -31,7 +31,7 @@ Comprehensive NFL player statistics database built from [nflverse](https://githu
 
 | View | Unions | Purpose |
 |------|--------|---------|
-| **`v_depth_charts`** | `depth_charts` + `depth_charts_2025` | Cross-schema composite — query depth charts across the 2025 schema change with a single column set. See the [`v_depth_charts` section](#view-v_depth_charts-composite-across-schemas) for the column map and era-specific data differences. |
+| **`v_depth_charts`** | `depth_charts` + `depth_charts_2025` | Cross-schema composite — query depth charts across the 2025 schema change with a single column set (`season`, `week`, `team`, `position`, `pos_abb`, `depth_rank`, `formation`, …). See the [`v_depth_charts` section](#view-v_depth_charts-composite-across-schemas) for the column map and an example query. |
 
 ---
 
@@ -809,48 +809,54 @@ Daily depth chart positions for 2025+ season. **Different schema from `depth_cha
 
 ### View: `v_depth_charts` (composite across schemas)
 
-nflverse changed the depth-chart model in 2025 — pre-2025 is **weekly** with a coarse 1/2/3 depth and lives in `depth_charts`; 2025+ is **daily** with a 1–15 depth and lives in `depth_charts_2025`. `v_depth_charts` is a DuckDB view that UNIONs the two base tables on the columns that are honestly shared across both, plus a `source` tag so you can tell which side a row came from.
+nflverse changed the depth-chart model in 2025 — pre-2025 is **weekly** with a coarse 1/2/3 depth and lives in `depth_charts`; 2025+ is **daily** with a 1–15 depth and lives in `depth_charts_2025`. `v_depth_charts` is a DuckDB view that UNIONs both base tables into a single normalized schema, so a single cross-season query covers both sides of the 2025 change.
 
-The view deliberately **excludes** columns that don't exist on one of the two sides (`week` is weekly-grain-only; general `position` is legacy-only and has no honest equivalent in 2025). Query the base table directly when you need an era-specific column.
+Where the 2025 data doesn't natively have a column the legacy side does, the view **derives** it:
+
+- **`season`**: for 2025+ rows, derived from `dt`, adjusted for the NFL calendar (dates in January–February belong to the prior year's season, not the calendar year).
+- **`week`**: for 2025+ rows, looked up from the `games` table using the latest game whose `gameday <= dt` within the same NFL season. NULL for preseason dates (no prior game yet). For playoff dates, returns the nearest game's week (18 during the wildcard window, 19 for divisional, etc.).
+- **`position`**: for 2025+ rows, slot-specific `pos_abb` values (LDE, RCB, WLB, LT, …) are mapped to legacy-comparable general positions (DE, CB, OLB, T, …). Values that are already general (QB, WR, TE, RB, FS, SS, etc.) pass through unchanged. The full mapping is in `scripts/pipeline.py:create_views`.
+
+Rows that uniquely exist on only one side — `dt` (2025 daily timestamp), `player_espn_id` (2025 only), `pos_grp` (2025 only) — are NULL on the other side. Same for `pos_abb` on both sides (legacy takes it from `depth_position`).
 
 **Rows:** 1,345,686 (869,185 legacy + 476,501 v2025)
 
 | Column | Type | Legacy source | 2025 source | Notes |
 |--------|------|---------------|-------------|-------|
-| `season` | BIGINT | `season` | derived from `dt` | Year extracted from the 2025 timestamp |
-| `dt` | VARCHAR | `NULL` | `dt` | ISO 8601 timestamp; only populated for 2025+ (legacy data is weekly, not daily) |
+| `season` | BIGINT | `season` | derived from `dt` (NFL-calendar adjusted) | Jan/Feb dates map to the prior year's NFL season |
+| `week` | INTEGER | `week` | derived via `games` lookup | NULL for preseason dates; playoff dates get the nearest `games.week` |
+| `dt` | VARCHAR | `NULL` | `dt` | ISO 8601 timestamp; only populated for 2025+ (legacy is weekly, not daily) |
 | `team` | VARCHAR | `club_code` | `team` | Legacy's `club_code` aliased |
 | `player_gsis_id` | VARCHAR | `player_gsis_id` | `player_gsis_id` | — |
 | `player_espn_id` | VARCHAR | `NULL` | `player_espn_id` | Only 2025 carries it |
-| `pos_abb` | VARCHAR | `depth_position` | `pos_abb` | Slot-specific position abbreviation (e.g. "QB", "RCB", "LDE"). Legacy's `depth_position` is the closest analog to 2025's `pos_abb` — both take values like "LCB"/"RCB"/"MLB" |
-| `depth_rank` | BIGINT | `depth_team` cast to INTEGER | `pos_rank` | Legacy has values 1–3 (the upstream only tracks starter/backup/3rd); 2025 goes 1–15. Not a synthesis asymmetry — that's just what each era's data has |
+| `position` | VARCHAR | `position` | derived from `pos_abb` | General position: WR, CB, RB, T, OLB, DE, G, TE, DT, ILB, QB, SS, FS, C, K, P, etc. `WHERE position = 'CB'` returns CBs from both eras |
+| `pos_abb` | VARCHAR | `depth_position` | `pos_abb` | Slot-specific position abbreviation (e.g. "QB", "RCB", "LDE"). Use this when you care about slot accuracy (RCB vs LCB) |
+| `depth_rank` | BIGINT | `depth_team` cast to INTEGER | `pos_rank` | Legacy has 1–3 (upstream only tracks starter/backup/3rd); 2025 goes 1–15. Not a synthesis asymmetry — that's just what each era's data has |
 | `formation` | VARCHAR | `formation` | derived from `pos_grp` | Collapsed to `Offense` / `Defense` / `Special Teams` |
 | `pos_grp` | VARCHAR | `NULL` | `pos_grp` | 2025's raw personnel/formation label (e.g. "3WR 1TE", "Base 4-3 D") — richer than the 3-valued `formation`, kept for callers who want it |
 | `source` | VARCHAR | `'legacy'` | `'v2025'` | Provenance tag |
 
-**What the view intentionally doesn't give you:**
-- No `week` column. Weeks don't exist in 2025's daily data, and synthesizing them from `dt` would be fragile (byes, Thursday/international kickoffs, pre/postseason). For week-scoped pre-2025 data, query `depth_charts` directly.
-- No general `position` column (e.g. "WR"). 2025's upstream data only ships slot-specific abbreviations (LWR/RWR/SWR), and mapping them back to a "general position" is opinionated enough that we don't do it silently. `pos_abb` is what's honestly there on both sides. For the legacy-era general `position` column, query `depth_charts` directly.
-
 **Two facts about the data, not workarounds:**
-- `depth_rank` coverage differs by era: legacy is 1–3; 2025 is 1–15. A filter `WHERE depth_rank = 5` returns only 2025 rows, which is correct — the legacy data simply doesn't know about rank 5.
-- 2025 is daily, so one team/position can have multiple `depth_rank = 1` rows across a season as the starter changed. For point-in-time data, filter on `dt` (or use `depth_charts_2025` directly). For a "who was the primary starter this season" view, aggregate (`argmax(player_gsis_id, dt)`) or pick a specific `dt`.
+- `depth_rank` coverage differs by era: legacy is 1–3; 2025 is 1–15. A filter `WHERE depth_rank = 5` returns only 2025 rows — correct, the legacy data simply doesn't know about rank 5.
+- 2025 is daily, so one team/position can have multiple `depth_rank = 1` rows across a season as the starter changed. For a specific point in time, filter on `dt`. For "who was the primary starter this season," aggregate (`argmax(player_gsis_id, dt)` per team/position) or pick a specific `dt`.
 
-**Example: starter across 2023–2025 for one team**
+**Example: starter across 2023–2025 for one team, filterable by week**
 
 ```sql
-SELECT DISTINCT v.source, v.season, p.display_name
+SELECT DISTINCT v.source, v.season, v.week, p.display_name
 FROM v_depth_charts v
 JOIN players p ON p.player_gsis_id = v.player_gsis_id
-WHERE v.team = 'KC' AND v.depth_rank = 1 AND v.pos_abb = 'QB'
+WHERE v.team = 'KC' AND v.depth_rank = 1 AND v.position = 'QB'
   AND v.season BETWEEN 2023 AND 2025
-ORDER BY v.season, v.source;
+  AND v.week IN (1, 8, 17)
+ORDER BY v.season, v.week, v.source;
 ```
 
 **When to skip the view and query a base table:**
-- Need `week`, general `position`, or any legacy-specific column → `depth_charts` (2001–2024).
-- Need `dt`, deep-rank (4+), personnel grouping, or point-in-time 2025 data → `depth_charts_2025` (2025+).
-- Cross-era composite over the honestly-shared columns → this view.
+- Deep-rank queries (depth_rank 4+) → `depth_charts_2025` (only 2025+ has that detail).
+- Point-in-time 2025 data with day precision → `depth_charts_2025` directly for the `dt` column.
+- Legacy-era `formation`/`elias_id`/`first_name`/`last_name` detail → `depth_charts` directly.
+- Cross-era composite with normalized columns → this view.
 
 The view is recreated automatically on every build (`pipeline.run` → `create_views`).
 
