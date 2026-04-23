@@ -88,6 +88,19 @@ python3 scripts/build_db.py --all --output data/nflverse.duckdb    # Write to sp
 
 Each year-partitioned insert runs inside a single transaction — a failed fetch or integrity check rolls back cleanly and leaves the DB unchanged. Out-of-range years (e.g. `--years 2025 --tables depth_charts`, where the legacy `depth_charts` table ends in 2024) are skipped with a clear message rather than silently loading mismatched data.
 
+### Optional: also build a SQLite sibling
+
+After the DuckDB build, you can mirror the same data + schema + 60 FKs into a SQLite file for tools that prefer it:
+
+```bash
+python3 scripts/build_sqlite.py                     # writes data/nflverse.sqlite
+python3 scripts/build_sqlite.py --no-vacuum         # skip VACUUM (~30s faster)
+```
+
+Takes ~2-3 min, produces ~2.5 GB file (vs ~940 MB for DuckDB — SQLite is row-store, no columnar compression). Row-count + FK + orphan parity with the DuckDB is verified as part of the build.
+
+**Consumer-side caveat:** SQLite's FK enforcement is per-connection and **off by default**. Clients that want enforcement (or want to query FK metadata via `PRAGMA foreign_key_list`) must run `PRAGMA foreign_keys = ON` after connecting. The DDL is declared either way — it's just not enforced unless the pragma is set.
+
 ## Incremental updates
 
 ```bash
@@ -129,9 +142,11 @@ Credit: [nflverse/nflreadpy](https://github.com/nflverse/nflreadpy) — the offi
 | `scripts/build_db_nflreadpy.py` | Alternative build via [nflreadpy](https://github.com/nflverse/nflreadpy) — fallback when the primary path breaks |
 | `scripts/check_updates.py` | Detect new/changed upstream data vs local DB |
 | `scripts/pipeline.py` | Shared build logic (TableConfig, year-partition, backups, indexes) |
+| `scripts/build_sqlite.py` | Mirror the built DuckDB to a SQLite sibling at `data/nflverse.sqlite` (same data, same 60 FKs, same indexes) |
 | `scripts/config.py` | DB path constants |
 | `requirements.txt` | `nflreadpy`, `pandas`, `pyarrow`, `duckdb` |
 | `docs/DATABASE.md` | Full schema reference |
+| `docs/INGESTION.md` | Pipeline playbook (adding seasons/tables, failure modes, design principles) |
 | `data/raw/` | Downloaded source files (gitignored) |
 | `data/update_metadata.json` | Auto-generated update tracking (gitignored) |
 

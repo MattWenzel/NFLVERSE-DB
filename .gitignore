@@ -9,6 +9,10 @@ data/*.db-wal
 data/*.duckdb
 data/*.duckdb.bak
 data/*.duckdb.wal
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
+data/*.sqlite.bak
 
 # Raw data files (downloaded from GitHub, rebuild locally)
 data/raw/

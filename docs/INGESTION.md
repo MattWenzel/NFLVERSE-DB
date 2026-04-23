@@ -621,12 +621,96 @@ If the INSERT succeeds, something's wrong with the FK declarations.
 
 ---
 
-## 11. Current state summary
+## 11. SQLite sibling build
+
+The canonical build is DuckDB (`data/nflverse.duckdb`). `scripts/build_sqlite.py` mirrors the already-built DuckDB into `data/nflverse.sqlite` for consumers that prefer SQLite tooling. No separate ingestion logic — SQLite is a **projection** of the DuckDB, so every cleanup, enrichment, recovery, stub, and FK declaration from the canonical build is preserved automatically.
+
+### When to run it
+
+After any `build_db.py` run that changed data. Typical full-rebuild sequence:
+
+```bash
+rm data/nflverse.duckdb
+python3 scripts/build_db.py --all               # ~1 min
+python3 scripts/build_db.py --pbp --no-backup   # ~1 min
+python3 scripts/build_sqlite.py                 # ~2-3 min (includes VACUUM)
+```
+
+Skip it if nothing downstream needs SQLite — the DuckDB alone is always the source of truth.
+
+### How it works
+
+Hybrid approach (see `scripts/build_sqlite.py` for the code):
+
+1. **DDL via Python `sqlite3`** — query DuckDB's `information_schema.columns` and `duckdb_constraints()` to discover each table's columns, types, UNIQUE constraints, and FKs. Emit explicit SQLite `CREATE TABLE` statements with the mapped types and the same constraint clauses. Close the sqlite3 connection when done.
+2. **Bulk data transfer via DuckDB's `sqlite_scanner` extension** — `ATTACH` both the source DuckDB and the target SQLite, then `INSERT INTO dst.table SELECT * FROM src.main.table` for every table. DuckDB handles the multi-threaded row copy and automatic type conversion (e.g., `BOOLEAN → 0/1 INTEGER`).
+3. **Post-build:** create the three indexes (same names as DuckDB), run row-count parity + FK-metadata + orphan checks, `VACUUM` to reclaim space.
+
+### Type mapping
+
+Only six DuckDB types appear in the schema, so the mapping is a finite lookup in `scripts/build_sqlite.py:TYPE_MAP`:
+
+| DuckDB | SQLite |
+|--------|--------|
+| VARCHAR | TEXT |
+| DOUBLE, FLOAT, REAL | REAL |
+| BIGINT, INTEGER, HUGEINT, SMALLINT, TINYINT | INTEGER |
+| BOOLEAN | INTEGER (0/1) |
+| DATE, TIMESTAMP, TIME | TEXT (ISO format) |
+| BLOB | BLOB |
+
+Anything outside these maps to TEXT as a safe fallback. If nflverse ever ships a new type, the `sqlite_type_for` helper will warn via the fallback; update `TYPE_MAP` to add a proper mapping.
+
+### `v_depth_charts` is a materialized table in SQLite
+
+DuckDB's `v_depth_charts` is a live view with SQL that uses DuckDB-specific syntax (`EXTRACT`, `::INTEGER`, correlated subqueries with `CAST … AS TIMESTAMP`). Rather than re-implement the SQL in SQLite dialect, we materialize the view's result rows into a plain SQLite table with the same name and column set. Consumers querying `SELECT * FROM v_depth_charts WHERE team = 'KC'` get identical rows on both engines.
+
+Trade-off: the SQLite `v_depth_charts` is static — it reflects the state at build time, not live. Since underlying tables only change on full rebuilds, this is a non-issue in practice.
+
+### FK enforcement in SQLite — important consumer caveat
+
+SQLite FKs are **declared unconditionally** but **enforced per-connection, default off**. Every FK edge the DuckDB has is also declared in the SQLite DDL (60 total, verified by `PRAGMA foreign_key_list` on every table after build). But to actually enforce them on write — or to use the FK metadata as a join graph — a consumer must:
+
+```sql
+PRAGMA foreign_keys = ON;
+```
+
+… after every `sqlite3.connect()`. The README and DATABASE.md document this for downstream users. The build script sets it itself during the verification pass so orphans can be caught live.
+
+### Verification the script runs every time
+
+- Row-count parity on every table + view (fails the build if any table differs).
+- `PRAGMA foreign_key_list` total across all tables must return 60 (fails logged, build proceeds but orphan sweep catches the real issue).
+- Orphan sweep with `PRAGMA foreign_keys = ON` — must report 0.
+- `PRAGMA integrity_check` — must return `ok`.
+
+### Size expectations
+
+DuckDB's columnar layout compresses much better than SQLite's row-store. Expect:
+
+- DuckDB: ~940 MB
+- SQLite: ~2.5 GB (after VACUUM)
+
+The size difference is engine-inherent, not a sign of duplication or bloat. Both hold the same rows.
+
+### Adding a new table — what changes in build_sqlite.py
+
+If you add a new TableConfig to `build_db.py`, also add the table name to `TABLE_ORDER` in `scripts/build_sqlite.py`. The list is deliberately hardcoded (not imported from build_db.py) so the SQLite build fails fast if the two drift, catching any accidental omission.
+
+If the new table has a FK, nothing else needs changing — `build_ddl` reads the constraint from `duckdb_constraints()` automatically.
+
+If the new table uses a DuckDB type not in `TYPE_MAP`, add it there.
+
+If the new table should participate in a view (`v_depth_charts` style), add the view name to `VIEW_MATERIALIZATIONS`.
+
+---
+
+## 12. Current state summary
 
 - **13 tables + 1 view** (`v_depth_charts`): see `DATABASE.md`.
 - **60 foreign keys**: every edge the consumer (NFL_AI_AGENT) asked for, 0 orphans.
-- **Full rebuild time**: ~2 minutes. `build_db.py --all` ≈ 1m15s (includes recovery), `build_db.py --pbp` ≈ 52s.
-- **File size**: ~940 MB DuckDB.
+- **Full rebuild time**: ~2 min DuckDB + ~2-3 min optional SQLite mirror. `build_db.py --all` ≈ 1m15s (includes recovery), `build_db.py --pbp` ≈ 52s, `build_sqlite.py` ≈ 2m30s.
+- **File sizes**: DuckDB ~940 MB, SQLite (optional) ~2.5 GB.
 - **Players registry size**: ~25,000 rows (includes ~700 cross-referenced stubs beyond nflverse's primary parquet).
 - **Per-rebuild GSIS recoveries**: ~8,200 rows (7,100 draft_picks pre-1995 HoF picks + 1,050 depth_charts_2025 practice-squad + ~50 scattered). Without recovery, those rows would have NULL gsis; with it, they join to the correct `players` record.
 

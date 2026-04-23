@@ -8,7 +8,10 @@ Comprehensive NFL player statistics database built from [nflverse](https://githu
 
 | Database | Size | Tables | Total Rows | Years |
 |----------|------|--------|------------|-------|
-| `nflverse.duckdb` | ~740 MB | 14 | ~3.5M | 1999-2025 |
+| `nflverse.duckdb` | ~940 MB | 14 | ~3.5M | 1999-2025 |
+| `nflverse.sqlite` (optional sibling) | ~2.5 GB | 14 | ~3.5M | 1999-2025 |
+
+Both files carry the same schema, same 60 foreign keys, same indexes, and the same `v_depth_charts` (a live view in DuckDB, materialized as a table in SQLite). Choose whichever engine your tooling prefers. Build SQLite after DuckDB with `python3 scripts/build_sqlite.py`. **SQLite consumers: run `PRAGMA foreign_keys = ON` after connecting to enable FK enforcement** (SQLite's default is off).
 
 ### Table Row Counts
 
