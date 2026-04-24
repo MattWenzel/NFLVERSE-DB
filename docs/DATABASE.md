@@ -1,36 +1,47 @@
 # nflverse Database Documentation
 
-Comprehensive NFL player statistics database built from [nflverse](https://github.com/nflverse) data.
+Comprehensive NFL data built from [nflverse](https://github.com/nflverse) into a single DuckDB file. 25 tables, 78 foreign keys, covering 1999–2025.
 
-> **Adding new data?** See [`INGESTION.md`](INGESTION.md) for the build pipeline's architecture, per-table update modes, FK declaration rules, and step-by-step guides for adding a new season or a new source table.
+> **Design context:** [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md) is the authoritative list of rules + why they exist. [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md) is the field guide of upstream-data reality. [`scripts/schema.py`](../scripts/schema.py) is the authoritative declarative shape — every SOURCE, TABLE, FK, FILL_RULE.
 
 ## Quick Stats
 
 | Database | Size | Tables | Total Rows | Years |
-|----------|------|--------|------------|-------|
-| `nflverse.duckdb` | ~940 MB | 14 | ~3.5M | 1999-2025 |
-| `nflverse.sqlite` (optional sibling) | ~2.5 GB | 14 | ~3.5M | 1999-2025 |
+|---|---|---|---|---|
+| `nflverse.duckdb` | ~1.2 GB | 25 | ~5.5M | 1999-2025 |
+| `nflverse.sqlite` (optional) | ~3.3 GB | 25 | ~5.5M | 1999-2025 |
 
-Both files carry the same schema, same 60 foreign keys, same indexes, and the same `v_depth_charts` (a live view in DuckDB, materialized as a table in SQLite). Choose whichever engine your tooling prefers. Build SQLite after DuckDB with `python3 scripts/build_sqlite.py`. **SQLite consumers: run `PRAGMA foreign_keys = ON` after connecting to enable FK enforcement** (SQLite's default is off).
+Both carry the same schema, 78 foreign keys, same indexes, and `v_depth_charts` view. Build DuckDB with `python3 scripts/build.py`; mirror to SQLite with `python3 scripts/build_sqlite.py`. **SQLite consumers: run `PRAGMA foreign_keys = ON`** after connecting (SQLite's default is off).
 
 ### Table Row Counts
 
-| Table | Rows | Columns | Description |
-|-------|------|---------|-------------|
-| **players** | 24,992 | 39 | Master player registry (all positions) |
-| **player_ids** | 7,703 | 35 | Cross-platform ID mapping (ESPN, Yahoo, PFR, etc.) |
-| **games** | 7,276 | 46 | Schedule, scores, weather, betting, QB IDs |
-| **game_stats** | 476,155 | 115 | Weekly player stats (all position groups) |
-| **season_stats** | 61,589 | 113 | Season totals — REG + POST. POST aggregates were originally absent; see `INGESTION.md` §12.2 for the downloaded-plus-augmented strategy. |
-| **draft_picks** | 12,670 | 36 | Historical NFL draft data + career stats |
-| **combine** | 8,649 | 18 | Scouting Combine results |
-| **snap_counts** | 276,948 | 16 | Weekly snap participation (2015-2025) |
-| **ngs_stats** | 26,656 | 52 | Next Gen Stats (2016-2025) |
-| **depth_charts** | 869,185 | 15 | Weekly depth charts (2001-2024) |
-| **depth_charts_2025** | 476,501 | 12 | Daily depth charts (2025+, different schema) |
-| **pfr_advanced** | 7,798 | 64 | PFR advanced stats (2018-2025) |
-| **qbr** | 9,570 | 30 | ESPN Total QBR (2006-2023) |
-| **play_by_play** | 1,279,628 | 372 | Every NFL play (1999-2025) |
+| Table | Rows | Purpose |
+|-------|------|---------|
+| **players** | 26,741 | Master player registry (all positions) |
+| **player_ids** | 7,703 | Cross-platform ID bridge (ESPN/Yahoo/PFR/Sleeper/etc.) |
+| **games** | 7,276 | Schedule, scores, weather, betting, QB IDs, stadium_id |
+| **stadiums** | 62 | Reference table (derived) — latest name, roof, surface, location |
+| **weekly_rosters** | 906,378 | Week-level roster snapshots w/ full cross-ID set (2002+) |
+| **combine** | 8,649 | NFL Scouting Combine results + draft info |
+| **draft_picks** | 12,670 | NFL Draft history + career outcomes |
+| **snap_counts** | 324,611 | Weekly snap participation (2012+) |
+| **depth_charts** | 869,185 | Weekly depth charts (2001-2024, legacy schema) |
+| **depth_charts_2025** | 476,501 | Daily depth charts (2025+, new schema) |
+| **pfr_advanced** | 15,335 | PFR season advanced stats, pass/rush/rec/def (2018+) |
+| **pfr_advanced_weekly** | 121,954 | PFR week-level advanced stats (2018+) |
+| **ngs_stats** | 26,656 | Next Gen Stats, passing/rushing/receiving (2016+) |
+| **qbr** | 10,709 | ESPN Total QBR (2006+); `game_id` is ESPN-namespace |
+| **injuries** | 90,752 | Weekly injury reports (2009+) |
+| **contracts** | 50,817 | Historical contracts + salary terms |
+| **contracts_cap_breakdown** | 302,242 | Year-by-year cap breakdown (derived; flattens contracts.cols) |
+| **officials** | 21,900 | Referee crews per game; `old_game_id` joins to games |
+| **game_stats** | 476,155 | Weekly player stats (all positions, ~115 cols) |
+| **season_stats** | 61,588 | Season-level (REG + POST, 113 cols) |
+| **team_game_stats** | 14,531 | Team-level weekly aggregates |
+| **team_season_stats** | 1,198 | Team-level season aggregates (REG + POST) |
+| **pbp_participation** | 478,989 | Per-play participation — who was on field (2016+) |
+| **ftn_charting** | 185,215 | FTN manual play charting (2022+) |
+| **play_by_play** | 1,279,628 | Every play, 1999+, 372 columns |
 
 ### Views
 
@@ -563,7 +574,7 @@ Aggregated season totals. Same stat columns as `game_stats` but summed across al
 
 **Note:** `season_stats` uses `gwfg_distance_list` (TEXT) instead of `game_stats`'s `gwfg_distance` (INTEGER).
 
-**Note:** `season_stats` carries both `REG` and `POST` rows. POST aggregates come primarily from nflverse's `stats_player_post_{year}.parquet`; a small safety-net pass (`compute_missing_season_stats` in `pipeline.py`) fills any (player, season, type) combination still present in `game_stats` but absent from the downloaded feed. Derived rows leave ratio columns (`passer_rating`, `fg_pct`, `completion_percentage`, etc.) NULL — consumers compute from the additive components. See `INGESTION.md` §12.2.
+**Note:** `season_stats` carries both `REG` and `POST` rows. POST aggregates come primarily from nflverse's `stats_player_post_{year}.parquet`; a small safety-net pass (`compute_missing_season_stats` in `scripts/engine.py`) fills any (player, season, type) combination still present in `game_stats` but absent from the downloaded feed. Derived rows leave ratio columns (`passer_rating`, `fg_pct`, `completion_percentage`, etc.) NULL — consumers compute from the additive components. See [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md) R7.
 
 **Indexes:**
 - `idx_season_stats_player_season` on `(player_gsis_id, season)`
@@ -822,7 +833,7 @@ Where the 2025 data doesn't natively have a column the legacy side does, the vie
 
 - **`season`**: for 2025+ rows, derived from `dt`, adjusted for the NFL calendar (dates in January–February belong to the prior year's season, not the calendar year).
 - **`week`**: for 2025+ rows, looked up from the `games` table using the latest game whose `gameday <= dt` within the same NFL season. NULL for preseason dates (no prior game yet). For playoff dates, returns the nearest game's week (18 during the wildcard window, 19 for divisional, etc.).
-- **`position`**: for 2025+ rows, slot-specific `pos_abb` values (LDE, RCB, WLB, LT, …) are mapped to legacy-comparable general positions (DE, CB, OLB, T, …). Values that are already general (QB, WR, TE, RB, FS, SS, etc.) pass through unchanged. The full mapping is in `scripts/pipeline.py:create_views`.
+- **`position`**: for 2025+ rows, slot-specific `pos_abb` values (LDE, RCB, WLB, LT, …) are mapped to legacy-comparable general positions (DE, CB, OLB, T, …). Values that are already general (QB, WR, TE, RB, FS, SS, etc.) pass through unchanged. The full mapping is in `scripts/engine.py:create_views`.
 
 Rows that uniquely exist on only one side — `dt` (2025 daily timestamp), `player_espn_id` (2025 only), `pos_grp` (2025 only) — are NULL on the other side. Same for `pos_abb` on both sides (legacy takes it from `depth_position`).
 
@@ -1165,11 +1176,11 @@ All player-level tables reference `players`; `game_stats` and `play_by_play` add
 
 Two concerns had to be engineered around:
 
-1. **Junk-ID sentinels** (nflverse ships `''`, `'0'`, `'XX-0000001'` as "no ID" placeholders for pre-2001 data). The build normalizes these to NULL in `scripts/pipeline.py:clean_gsis_id_series` / `clean_id_series`. Rows are kept; only the bad-reference column is nulled, so the FK admits them as "unknown" without dropping data.
+1. **Junk-ID sentinels** (nflverse ships `''`, `'0'`, `'XX-0000001'` as "no ID" placeholders for pre-2001 data). The build normalizes these to NULL in `scripts/engine.py:clean_gsis_id_series` / `clean_id_series`. Rows are kept; only the bad-reference column is nulled, so the FK admits them as "unknown" without dropping data.
 
 2. **Real players outside the `players` registry** (combine-only college players, 2025 practice squad, ESPN-only fringe players, recent rookies not yet in nflverse's `players.parquet`). The build enriches `players` from two sources before any FK-bearing child INSERT fires:
-   - `_fetch_players` in `scripts/build_db.py` merges `players.parquet` with the `player_ids` bridge table at the pandas layer — this seeds ~330 stub rows and backfills missing PFR/ESPN IDs on existing players.
-   - For each child table that declares a FK, `stub_players_for_config` / `bulk_load_from_parquet_glob` in `scripts/pipeline.py` extracts any reference IDs not already in `players` and seeds minimal stub rows from the child's own metadata (name + position + team + school, whichever the child carries).
+   - `_fetch_players` in `scripts/build.py` merges `players.parquet` with the `player_ids` bridge table at the pandas layer — this seeds ~330 stub rows and backfills missing PFR/ESPN IDs on existing players.
+   - For each child table that declares a FK, `stub_players_for_config` / `bulk_load_from_parquet_glob` in `scripts/engine.py` extracts any reference IDs not already in `players` and seeds minimal stub rows from the child's own metadata (name + position + team + school, whichever the child carries).
 
 Result: every row is preserved and every FK target exists. Total players table grows ~3-4K rows beyond nflverse's source parquet to cover all cross-referenced IDs.
 
@@ -1385,20 +1396,15 @@ Data is sourced from [nflverse](https://github.com/nflverse) via `nflreadpy` (su
 ## Build Scripts
 
 ```bash
-# Primary: download raw files, then build locally
-python3 scripts/download.py --all
-python3 scripts/build_db.py --all
-python3 scripts/build_db.py --all --output data/nflverse.duckdb
-
-# Alternative (fallback via nflreadpy network client; use if the primary path breaks)
-python3 scripts/build_db_nflreadpy.py --all
-python3 scripts/build_db_nflreadpy.py --years 2025
-python3 scripts/build_db_nflreadpy.py --tables game_stats players
-python3 scripts/build_db_nflreadpy.py --pbp --years 2025
-python3 scripts/build_db_nflreadpy.py --pbp --all
+python3 scripts/catalog.py                     # refresh manifest
+python3 scripts/download.py --all              # pull every enabled source
+python3 scripts/build.py                       # full build (incl. PBP)
+python3 scripts/build.py --years 2025          # incremental rebuild
+python3 scripts/build.py --output data/x.duckdb
+python3 scripts/build_sqlite.py                # optional SQLite sibling
 ```
 
-See [`../README.md`](../README.md) for the full command reference.
+See [`../README.md`](../README.md) for the full CLI reference and [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md) for the invariants the build enforces.
 
 ---
 

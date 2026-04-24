@@ -452,13 +452,13 @@ def print_report(results):
     if new_years:
         years_str = " ".join(str(y) for y in sorted(new_years))
         suggestions.append(f"python3 scripts/download.py --years {years_str}")
-        suggestions.append(f"python3 scripts/build_db.py --years {years_str}")
+        suggestions.append(f"python3 scripts/build.py --years {years_str}")
     if updated_tables:
         tables_str = " ".join(updated_tables)
-        suggestions.append(f"python3 scripts/download.py --tables {tables_str} --force")
-        suggestions.append(f"python3 scripts/build_db.py --tables {tables_str}")
+        suggestions.append(f"python3 scripts/download.py --sources {tables_str} --force")
+        suggestions.append("python3 scripts/build.py  # full rebuild recommended after source refresh")
     if not suggestions and (results["new_data"] or results["updated"]):
-        suggestions.append("python3 scripts/download.py --all && python3 scripts/build_db.py --all")
+        suggestions.append("python3 scripts/download.py --all && python3 scripts/build.py")
 
     if suggestions:
         print("Suggested commands:")

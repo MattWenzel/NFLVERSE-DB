@@ -1,25 +1,27 @@
 # NFLVERSE v1 → v3 comparison
 
-_(v2 never produced a shippable DB; this is v1 → v3)_
+_Focused v1 → v3 delta. For the full three-way view with v2, see [V3_THREE_WAY_COMPARISON.md](V3_THREE_WAY_COMPARISON.md)._
 
 ## Top-line
 
 | Metric | v1 | v3 | Δ |
-|---|---|---|---|
-| Tables | 14 | 23 | +9 |
-| Foreign keys | 60 | 72 | +12 |
-| Total rows | 3,592,983 | 5,475,141 | +1,882,158 |
-| DuckDB size | 906 MB | 1169 MB | +263 MB |
-| Build time | ~2 min | 4:48 | +3 min (23 vs 14 tables) |
+|---|---:|---:|---:|
+| Tables | 14 | 25 | +11 |
+| Foreign keys | 60 | 78 | +18 |
+| Total rows | 3,592,983 | 5,777,445 | +2,184,462 |
+| DuckDB size | 906 MB | 1,278 MB | +372 MB |
+| Build time | ~2 min | ~7-13 min | longer (25 vs 14 tables + survey + gates) |
 
 ## New in v3 (vs v1)
 
 - `contracts` — 50,817 rows
+- `contracts_cap_breakdown` — 302,242 rows (derived from `contracts.cols`)
 - `ftn_charting` — 185,215 rows
 - `injuries` — 90,752 rows
 - `officials` — 21,900 rows
 - `pbp_participation` — 478,989 rows
 - `pfr_advanced_weekly` — 121,954 rows
+- `stadiums` — 62 rows (derived from `games.stadium_id`)
 - `team_game_stats` — 14,531 rows
 - `team_season_stats` — 1,198 rows
 - `weekly_rosters` — 906,378 rows

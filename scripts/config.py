@@ -10,7 +10,7 @@ METADATA_PATH = ROOT / "data" / "update_metadata.json"
 RAW_DATA_PATH = ROOT / "data" / "raw"
 
 # First year of available data for each year-partitioned table.
-# Shared between download.py and pipeline.py so they can't drift.
+# Shared path constants; referenced by catalog/download/loaders/build etc.
 YEAR_RANGE_START = {
     "game_stats": 1999,
     "season_stats": 1999,
