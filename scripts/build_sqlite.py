@@ -79,23 +79,28 @@ def build_table_ddl(duck: duckdb.DuckDBPyConnection, table_name: str) -> str:
     ).fetchall()
     col_defs = [f'"{name}" {sqlite_type_for(dtype)}' for name, dtype in cols]
 
+    # Pull full column lists (handles composite UNIQUEs and composite FKs).
     uniques = duck.execute(
-        "SELECT constraint_column_names[1] FROM duckdb_constraints() "
-        "WHERE table_name=? AND constraint_type IN ('PRIMARY KEY','UNIQUE') "
-        "AND constraint_column_names[1] IS NOT NULL",
+        "SELECT constraint_column_names FROM duckdb_constraints() "
+        "WHERE table_name=? AND constraint_type IN ('PRIMARY KEY','UNIQUE')",
         [table_name],
     ).fetchall()
-    constraint_clauses = [f'UNIQUE("{u[0]}")' for u in uniques]
+    constraint_clauses = [
+        "UNIQUE(" + ", ".join(f'"{c}"' for c in u[0]) + ")"
+        for u in uniques if u[0]
+    ]
 
     fks = duck.execute(
-        "SELECT constraint_column_names[1], referenced_table, referenced_column_names[1] "
+        "SELECT constraint_column_names, referenced_table, referenced_column_names "
         "FROM duckdb_constraints() "
         "WHERE table_name=? AND constraint_type='FOREIGN KEY' "
         "ORDER BY constraint_column_names[1]",
         [table_name],
     ).fetchall()
     constraint_clauses += [
-        f'FOREIGN KEY("{c}") REFERENCES "{rt}"("{rc}")' for c, rt, rc in fks
+        "FOREIGN KEY(" + ", ".join(f'"{c}"' for c in cs) + ") "
+        f'REFERENCES "{rt}"(' + ", ".join(f'"{c}"' for c in rcs) + ")"
+        for cs, rt, rcs in fks
     ]
 
     body = ",\n  ".join(col_defs + constraint_clauses)

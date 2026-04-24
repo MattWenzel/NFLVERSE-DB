@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-24T03:06:23.322065+00:00",
+  "generated_at": "2026-04-24T04:00:49.284139+00:00",
   "db_path": "/home/mattw813/Documents/NFLVERSE/data/nflverse.duckdb",
   "queries": {
     "Q1": {
@@ -170,11 +170,11 @@
           "weeks_on_report": 13
         },
         {
-          "display_name": "Jaire Alexander",
+          "display_name": "Vederian Lowe",
           "weeks_on_report": 12
         },
         {
-          "display_name": "Vederian Lowe",
+          "display_name": "Jaire Alexander",
           "weeks_on_report": 12
         }
       ],
@@ -378,6 +378,46 @@
       ],
       "status": "ok"
     },
+    "Q16": {
+      "description": "Starting QBs by most games since 2020 (tests games.home_qb_id/away_qb_id FK)",
+      "row_count": 5,
+      "columns": [
+        "display_name",
+        "starts"
+      ],
+      "sample": [
+        {
+          "display_name": "Josh Allen",
+          "starts": 112
+        },
+        {
+          "display_name": "Patrick Mahomes",
+          "starts": 111
+        },
+        {
+          "display_name": "Jared Goff",
+          "starts": 102
+        }
+      ],
+      "status": "ok"
+    },
+    "Q17": {
+      "description": "FTN charting joined to play_by_play (tests composite FK join)",
+      "row_count": 1,
+      "columns": [
+        "season",
+        "plays",
+        "pass_rate"
+      ],
+      "sample": [
+        {
+          "season": 2024,
+          "plays": 48031,
+          "pass_rate": 0.46696924902667025
+        }
+      ],
+      "status": "ok"
+    },
     "Q15": {
       "description": "FK orphan sweep across all declared FKs (integrity invariant)",
       "row_count": 1,
@@ -386,7 +426,7 @@
       ],
       "sample": [
         {
-          "fk_count": 72
+          "fk_count": 75
         }
       ],
       "status": "ok"

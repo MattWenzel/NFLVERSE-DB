@@ -355,14 +355,21 @@ SOURCES: dict = {
         "year_range": (2022, "auto"),
         "renames": {"nflverse_game_id": "game_id", "nflverse_play_id": "play_id"},
         "id_cleanup": {"game_id": "generic", "ftn_game_id": "generic"},
+        # FTN publishes nflverse_play_id as INTEGER; pbp uses DOUBLE. Coerce
+        # so the composite FK (game_id, play_id) → play_by_play has matching
+        # types.
+        "force_types": {"play_id": "DOUBLE"},
     },
 
     # -------- nflverse_releases: officials (NEW) --------
     "officials": {
         "release_tag": "officials",
         "pattern": "officials/officials.parquet",
-        "renames": {},
-        "id_cleanup": {"game_id": "generic", "game_key": "generic", "official_id": "generic"},
+        # officials.game_id is NFL's internal YYYYMMDDGG format — exactly
+        # matches games.old_game_id. Rename at ingest so FK declaration
+        # targets the correct namespace.
+        "renames": {"game_id": "old_game_id"},
+        "id_cleanup": {"old_game_id": "generic", "game_key": "generic", "official_id": "generic"},
     },
 
     # -------- nflverse_releases: espn_data (NEW — replaces espnscrapeR CSV) --------
@@ -601,6 +608,16 @@ TABLES: dict = {
     "games": {
         "source_id": "schedules",
         "primary_key": "game_id",
+        # old_game_id is the NFL-internal YYYYMMDDGG format; 100% populated,
+        # globally unique, and is how officials.game_id references into games.
+        # Declare UNIQUE so officials can FK to it.
+        "unique_columns": ["old_game_id"],
+        "foreign_keys": [
+            # Starting QBs per game (unwired in v1/v2; fully populated from
+            # 1999 modern era). home_qb_id / away_qb_id are GSIS IDs.
+            {"column": "home_qb_id", "references": "players.player_gsis_id"},
+            {"column": "away_qb_id", "references": "players.player_gsis_id"},
+        ],
     },
 
     "snap_counts": {
@@ -834,25 +851,40 @@ TABLES: dict = {
 
     "pbp_participation": {
         # NEW in v2. Per-play participation (2016+). 46K plays/year × 26 cols.
+        # game_id FK is safe. Composite FK on (game_id, play_id) is NOT
+        # declared because the source has ~1% rows (~5,396) whose (game_id,
+        # play_id) isn't in play_by_play — would reject the insert. The
+        # audit documented this; consumers can still JOIN on (game_id, play_id)
+        # in queries, with LEFT JOIN semantics for the drift.
         "source_id": "pbp_participation",
         "foreign_keys": [
             {"column": "game_id", "references": "games.game_id"},
         ],
+        "expected_gaps": {
+            # Documents the 1% (game_id, play_id) non-match — data reality.
+            # No declared recovery; consumers use LEFT JOIN.
+        },
     },
 
     "ftn_charting": {
         # NEW in v2. FTN manual charting (2022+). 48K plays/year.
+        # Composite FK to play_by_play — 100% match on (game_id, play_id).
         "source_id": "ftn_charting",
         "foreign_keys": [
             {"column": "game_id", "references": "games.game_id"},
+            {"column": ("game_id", "play_id"),
+             "references": "play_by_play.(game_id, play_id)"},
         ],
     },
 
     "officials": {
-        # NEW in v2. Referee crews per game. Note: officials.game_id uses a
-        # different ID space (NFL's internal YYYYMMDDGG, not our 2015_01_GB_CHI).
-        # No FK until we work out a reliable crosswalk; join via (season, week, team)
-        # against games if needed.
+        # NEW in v2. Referee crews per game. `game_id` holds NFL's internal
+        # YYYYMMDDGG format (e.g. '2015091000') — matches `games.old_game_id`.
+        # Rename at ingest so consumers know the namespace. No FK declared
+        # because ~28 officials rows (out of 21,900, <0.2%) have an
+        # old_game_id that doesn't resolve to any games row — real upstream
+        # data drift. FK would reject those rows; accepting the gap is the
+        # "don't lose data" principle.
         "source_id": "officials",
         "foreign_keys": [],
     },
@@ -874,6 +906,9 @@ TABLES: dict = {
 
     "play_by_play": {
         "source_id": "pbp",
+        # Composite UNIQUE so ftn_charting and pbp_participation can declare
+        # FK on (game_id, play_id). play_id is per-game unique; pair is global.
+        "unique_columns": [("game_id", "play_id")],
         "foreign_keys": (
             [{"column": "game_id", "references": "games.game_id"}]
             + [{"column": c, "references": "players.player_gsis_id"} for c in PBP_PLAYER_COLS]
@@ -999,6 +1034,110 @@ FILL_RULES: list = [
         ),
         "scope": "where_null",
     },
+
+    # --- game_stats.game_id derivation from games lookup (v3 audit finding) ---
+    # Pre-2022 game_stats files don't carry game_id. 364,760 NULL rows can be
+    # recovered via (season, week, team, opponent_team) → games join. Fills
+    # game_stats.game_id from 12% → ~88%+ (only rows without a matching games
+    # entry stay NULL, which is data reality — upstream mismatch).
+    {
+        "name": "game_stats_game_id_from_games",
+        "target_table": "game_stats",
+        "op": "backfill_null",
+        "target_column": "game_id",
+        "source_table": "games",
+        "source_expression": (
+            "(SELECT g.game_id FROM games g "
+            "WHERE g.season = game_stats.season AND g.week = game_stats.week "
+            "AND ((g.home_team = game_stats.team AND g.away_team = game_stats.opponent_team) "
+            "OR (g.away_team = game_stats.team AND g.home_team = game_stats.opponent_team)) "
+            "LIMIT 1)"
+        ),
+    },
+
+    # --- combine.draft_year/team/round from draft_picks (v3 audit finding) ---
+    # combine has ~38% NULL on draft info; draft_picks knows it all. Fill via
+    # player_pfr_id lookup.
+    {
+        "name": "combine_draft_year_from_draft_picks",
+        "target_table": "combine",
+        "op": "backfill_null",
+        "target_column": "draft_year",
+        "source_table": "draft_picks",
+        "source_column": "season",
+        "join": [("combine.player_pfr_id", "draft_picks.player_pfr_id")],
+    },
+    {
+        "name": "combine_draft_team_from_draft_picks",
+        "target_table": "combine",
+        "op": "backfill_null",
+        "target_column": "draft_team",
+        "source_table": "draft_picks",
+        "source_column": "team",
+        "join": [("combine.player_pfr_id", "draft_picks.player_pfr_id")],
+    },
+    {
+        "name": "combine_draft_round_from_draft_picks",
+        "target_table": "combine",
+        "op": "backfill_null",
+        "target_column": "draft_round",
+        "source_table": "draft_picks",
+        "source_column": "round",
+        "join": [("combine.player_pfr_id", "draft_picks.player_pfr_id")],
+    },
+
+    # --- contracts.draft_round / draft_overall from draft_picks ---
+    {
+        "name": "contracts_draft_round_from_draft_picks",
+        "target_table": "contracts",
+        "op": "backfill_null",
+        "target_column": "draft_round",
+        "source_table": "draft_picks",
+        "source_column": "round",
+        "join": [("contracts.player_gsis_id", "draft_picks.player_gsis_id")],
+    },
+    {
+        "name": "contracts_draft_overall_from_draft_picks",
+        "target_table": "contracts",
+        "op": "backfill_null",
+        "target_column": "draft_overall",
+        "source_table": "draft_picks",
+        "source_column": "pick",
+        "join": [("contracts.player_gsis_id", "draft_picks.player_gsis_id")],
+    },
+    # --- contracts.date_of_birth from players ---
+    {
+        "name": "contracts_birth_date_from_players",
+        "target_table": "contracts",
+        "op": "backfill_null",
+        "target_column": "date_of_birth",
+        "source_table": "players",
+        "source_column": "birth_date",
+        "join": [("contracts.player_gsis_id", "players.player_gsis_id")],
+    },
+
+    # --- weekly_rosters.player_pfr_id / player_espn_id from players hub ---
+    # Source NULL rates: pfr 64%, espn 54%. Every GSIS-bearing row in
+    # weekly_rosters has a matching players hub row (100% FK), so lookup
+    # fills the 36%/46% of rows where the hub knows the cross-ID.
+    {
+        "name": "weekly_rosters_pfr_from_players",
+        "target_table": "weekly_rosters",
+        "op": "backfill_null",
+        "target_column": "player_pfr_id",
+        "source_table": "players",
+        "source_column": "player_pfr_id",
+        "join": [("weekly_rosters.player_gsis_id", "players.player_gsis_id")],
+    },
+    {
+        "name": "weekly_rosters_espn_from_players",
+        "target_table": "weekly_rosters",
+        "op": "backfill_null",
+        "target_column": "player_espn_id",
+        "source_table": "players",
+        "source_column": "player_espn_id",
+        "join": [("weekly_rosters.player_gsis_id", "players.player_gsis_id")],
+    },
 ]
 
 
@@ -1045,10 +1184,11 @@ LOAD_ORDER: list = [
     "game_stats",
     "season_stats",
     "pfr_advanced_weekly",
+    # play_by_play must load BEFORE pbp_participation / ftn_charting now
+    # that those declare FKs into (game_id, play_id).
+    "play_by_play",
     "pbp_participation",
     "ftn_charting",
-    # Heaviest last — references everything
-    "play_by_play",
 ]
 
 

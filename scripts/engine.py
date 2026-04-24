@@ -49,22 +49,38 @@ def write_table(conn: duckdb.DuckDBPyConnection, table_name: str,
         col_defs = [f'"{row[0]}" {row[1]}' for row in described]
 
         constraints: list[str] = []
-        uniques_seen: set[str] = set()
+        uniques_seen: set[tuple] = set()
+
+        def _as_cols(x) -> list[str]:
+            """Accept a single column name or tuple/list of column names."""
+            return [x] if isinstance(x, str) else list(x)
 
         pk = table_spec.get("primary_key")
         if pk:
-            constraints.append(f'UNIQUE ("{pk}")')
-            uniques_seen.add(pk)
+            pk_cols = _as_cols(pk)
+            constraints.append("UNIQUE (" + ", ".join(f'"{c}"' for c in pk_cols) + ")")
+            uniques_seen.add(tuple(pk_cols))
 
         for uc in table_spec.get("unique_columns", []):
-            if uc not in uniques_seen:
-                constraints.append(f'UNIQUE ("{uc}")')
-                uniques_seen.add(uc)
+            uc_cols = _as_cols(uc)
+            key = tuple(uc_cols)
+            if key not in uniques_seen:
+                constraints.append("UNIQUE (" + ", ".join(f'"{c}"' for c in uc_cols) + ")")
+                uniques_seen.add(key)
 
         for fk in table_spec.get("foreign_keys", []):
-            ref_table, ref_col = fk["references"].split(".")
+            fk_cols = _as_cols(fk["column"])
+            ref = fk["references"]
+            # references syntax: "table.col" OR "table.(col1,col2)"
+            ref_table, ref_rest = ref.split(".", 1)
+            if ref_rest.startswith("(") and ref_rest.endswith(")"):
+                ref_cols = [c.strip() for c in ref_rest[1:-1].split(",")]
+            else:
+                ref_cols = [ref_rest]
             constraints.append(
-                f'FOREIGN KEY ("{fk["column"]}") REFERENCES "{ref_table}"("{ref_col}")'
+                "FOREIGN KEY (" + ", ".join(f'"{c}"' for c in fk_cols) + ") "
+                f'REFERENCES "{ref_table}"('
+                + ", ".join(f'"{c}"' for c in ref_cols) + ")"
             )
 
         body = ",\n    ".join(col_defs + constraints)

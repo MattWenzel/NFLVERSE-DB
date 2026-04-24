@@ -123,7 +123,7 @@ CANARY = [
         "id": "Q7",
         "description": "Top officiating crews by games since 2020 (tests officials table)",
         "sql": """
-            SELECT official_name, position, COUNT(DISTINCT game_id) AS games
+            SELECT official_name, position, COUNT(DISTINCT old_game_id) AS games
             FROM officials WHERE season >= 2020
             GROUP BY official_name, position ORDER BY games DESC LIMIT 5
         """,
@@ -214,6 +214,35 @@ CANARY = [
         """,
         "expected_min_rows": 3,
         "expected_columns": ["season", "plays_charted"],
+    },
+    {
+        "id": "Q16",
+        "description": "Starting QBs by most games since 2020 (tests games.home_qb_id/away_qb_id FK)",
+        "sql": """
+            WITH qb_games AS (
+                SELECT home_qb_id AS gsis, season FROM games WHERE season >= 2020 AND home_qb_id IS NOT NULL
+                UNION ALL
+                SELECT away_qb_id AS gsis, season FROM games WHERE season >= 2020 AND away_qb_id IS NOT NULL
+            )
+            SELECT p.display_name, COUNT(*) AS starts
+            FROM qb_games q JOIN players p ON q.gsis = p.player_gsis_id
+            GROUP BY p.display_name ORDER BY starts DESC LIMIT 5
+        """,
+        "expected_min_rows": 5,
+        "expected_columns": ["display_name", "starts"],
+    },
+    {
+        "id": "Q17",
+        "description": "FTN charting joined to play_by_play (tests composite FK join)",
+        "sql": """
+            SELECT f.season, COUNT(*) AS plays, AVG(CASE WHEN pbp.pass THEN 1.0 ELSE 0 END) AS pass_rate
+            FROM ftn_charting f
+            JOIN play_by_play pbp ON pbp.game_id = f.game_id AND pbp.play_id = f.play_id
+            WHERE f.season = 2024
+            GROUP BY f.season
+        """,
+        "expected_min_rows": 1,
+        "expected_columns": ["season", "plays", "pass_rate"],
     },
     {
         "id": "Q15",

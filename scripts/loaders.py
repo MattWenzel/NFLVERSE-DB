@@ -126,11 +126,17 @@ def load_source(source_id: str, source_spec: dict, years: list[int] | None = Non
             else:
                 df[col] = pd.Series([None] * len(df))
 
-    # Force types (VARCHAR coerce for type-drifted columns)
+    # Force types (VARCHAR coerce for type-drifted columns, or explicit numeric
+    # coercions to match cross-table FK types).
     for col, dtype in source_spec.get("force_types", {}).items():
-        if col in df.columns:
-            if dtype == "VARCHAR":
-                df[col] = df[col].astype("string")
+        if col not in df.columns:
+            continue
+        if dtype == "VARCHAR":
+            df[col] = df[col].astype("string")
+        elif dtype == "DOUBLE":
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
+        elif dtype == "INTEGER":
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
 
     # ID cleanup — applied after renames so the cleanup map keys match current column names
     id_cleanup = source_spec.get("id_cleanup", {})
