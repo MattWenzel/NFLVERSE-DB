@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-24T04:00:49.284139+00:00",
+  "generated_at": "2026-04-24T04:57:53.075211+00:00",
   "db_path": "/home/mattw813/Documents/NFLVERSE/data/nflverse.duckdb",
   "queries": {
     "Q1": {
@@ -170,11 +170,11 @@
           "weeks_on_report": 13
         },
         {
-          "display_name": "Vederian Lowe",
+          "display_name": "Jaire Alexander",
           "weeks_on_report": 12
         },
         {
-          "display_name": "Jaire Alexander",
+          "display_name": "Vederian Lowe",
           "weeks_on_report": 12
         }
       ],
@@ -426,7 +426,7 @@
       ],
       "sample": [
         {
-          "fk_count": 75
+          "fk_count": 78
         }
       ],
       "status": "ok"

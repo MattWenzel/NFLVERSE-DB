@@ -592,7 +592,10 @@ TABLES: dict = {
     "players": {
         "build_via": "hub",   # special: built by HUB_BUILD, not a direct source projection
         "primary_key": "player_gsis_id",
-        "unique_columns": ["player_pfr_id", "player_espn_id"],
+        # Additional UNIQUE ID columns so cross-ID joins work without a bridge,
+        # and so consumers can FK into players via any of these. pff_id was
+        # added in audit 2 (100% unique on non-null, 11,256 values).
+        "unique_columns": ["player_pfr_id", "player_espn_id", "pff_id"],
         "indexes": [("player_gsis_id",)],
     },
 
@@ -602,6 +605,10 @@ TABLES: dict = {
         "dropna_cols": ["gsis_id"],
         "foreign_keys": [
             {"column": "gsis_id", "references": "players.player_gsis_id"},
+            # Audit-2 addition: 100% of player_ids.pff_id resolve to
+            # players.pff_id. Enables direct PFF-ID joins without going
+            # through gsis_id.
+            {"column": "pff_id", "references": "players.pff_id"},
         ],
     },
 
@@ -617,7 +624,76 @@ TABLES: dict = {
             # 1999 modern era). home_qb_id / away_qb_id are GSIS IDs.
             {"column": "home_qb_id", "references": "players.player_gsis_id"},
             {"column": "away_qb_id", "references": "players.player_gsis_id"},
+            # Note: games.stadium_id → stadiums.stadium_id is NOT declared as
+            # an FK because stadiums is derived from games after games loads;
+            # FK declaration at games' CREATE time would reference a table
+            # that doesn't exist yet. Consumers JOIN on stadium_id directly.
         ],
+    },
+
+    "contracts_cap_breakdown": {
+        # Derived table: flattens contracts.cols (array of STRUCTs) into one
+        # row per (contract, year) with cap number, guaranteed salary, etc.
+        # Makes year-by-year salary queries writable in plain SQL
+        # (SELECT * FROM contracts_cap_breakdown WHERE player_gsis_id = X)
+        # instead of requiring UNNEST syntax.
+        "build_via": "sql",
+        "sql_query": """
+            WITH flat AS (
+                SELECT
+                    c.player_gsis_id,
+                    c.otc_id,
+                    c.player,
+                    c.year_signed,
+                    c.team      AS contract_team,
+                    c.apy       AS contract_apy,
+                    c.value     AS contract_value,
+                    UNNEST(c.cols) AS yb
+                FROM contracts c
+                WHERE c.cols IS NOT NULL
+            )
+            SELECT
+                player_gsis_id, otc_id, player, year_signed,
+                contract_team, contract_apy, contract_value,
+                yb.year                  AS cap_year,
+                yb.team                  AS team,
+                yb.base_salary           AS base_salary,
+                yb.prorated_bonus        AS prorated_bonus,
+                yb.roster_bonus          AS roster_bonus,
+                yb.guaranteed_salary     AS guaranteed_salary,
+                yb.cap_number            AS cap_number,
+                yb.cap_percent           AS cap_percent,
+                yb.cash_paid             AS cash_paid,
+                yb.workout_bonus         AS workout_bonus,
+                yb.other_bonus           AS other_bonus,
+                yb.per_game_roster_bonus AS per_game_roster_bonus,
+                yb.option_bonus          AS option_bonus
+            FROM flat
+        """,
+    },
+
+    "stadiums": {
+        # Derived reference table: 62 unique stadium_ids extracted from games.
+        # Captures latest name + roof + surface + location. Enables queries
+        # like "games played at Arrowhead" without repeating stadium metadata
+        # across every games row. Build_via='sql' means the engine runs the
+        # sql_query after games is loaded.
+        "build_via": "sql",
+        "primary_key": "stadium_id",
+        "sql_query": """
+            SELECT
+                stadium_id,
+                arg_max(stadium, season)   AS latest_name,
+                arg_max(roof, season)      AS roof,
+                arg_max(surface, season)   AS surface,
+                arg_max(location, season)  AS location,
+                MIN(season)                AS first_season,
+                MAX(season)                AS last_season,
+                COUNT(*)                   AS games_hosted
+            FROM games
+            WHERE stadium_id IS NOT NULL
+            GROUP BY stadium_id
+        """,
     },
 
     "snap_counts": {
@@ -812,6 +888,11 @@ TABLES: dict = {
         "source_id": "weekly_rosters",
         "foreign_keys": [
             {"column": "player_gsis_id", "references": "players.player_gsis_id"},
+            # Audit-2 additions: all values resolve after weekly_rosters ID
+            # backfill from hub (§FILL_RULES). Redundant with gsis FK but
+            # enables direct PFR/ESPN/PFF joins for LLMs.
+            {"column": "player_pfr_id", "references": "players.player_pfr_id"},
+            {"column": "pff_id", "references": "players.pff_id"},
         ],
         "_removed_stub_source": {
             "player_gsis_id": {
@@ -868,12 +949,13 @@ TABLES: dict = {
 
     "ftn_charting": {
         # NEW in v2. FTN manual charting (2022+). 48K plays/year.
-        # Composite FK to play_by_play — 100% match on (game_id, play_id).
+        # 100% of (game_id, play_id) pairs match play_by_play, but declaring
+        # the composite FK makes the INSERT check run at ~nested-loop cost
+        # (185K × 1.28M = intractable in this DuckDB version). Drop the FK;
+        # consumers JOIN on (game_id, play_id) manually.
         "source_id": "ftn_charting",
         "foreign_keys": [
             {"column": "game_id", "references": "games.game_id"},
-            {"column": ("game_id", "play_id"),
-             "references": "play_by_play.(game_id, play_id)"},
         ],
     },
 
@@ -906,11 +988,13 @@ TABLES: dict = {
 
     "play_by_play": {
         "source_id": "pbp",
-        # Composite UNIQUE so ftn_charting and pbp_participation can declare
-        # FK on (game_id, play_id). play_id is per-game unique; pair is global.
-        "unique_columns": [("game_id", "play_id")],
+        # Note: considered UNIQUE on (game_id, play_id) to allow composite
+        # FK from ftn_charting / pbp_participation, but DuckDB's FK check
+        # algorithm scales poorly here (185K × 1.28M). Dropped; consumers
+        # JOIN without declared FK.
         "foreign_keys": (
             [{"column": "game_id", "references": "games.game_id"}]
+            + [{"column": "stadium_id", "references": "stadiums.stadium_id"}]
             + [{"column": c, "references": "players.player_gsis_id"} for c in PBP_PLAYER_COLS]
         ),
         "_removed_stub_source": {
@@ -1164,6 +1248,12 @@ LOAD_ORDER: list = [
     "players",
     "player_ids",
     "games",
+    # Derived reference table built from games' stadium_id
+    "stadiums",
+    # Contracts loaded first in the "player-linked" section so
+    # contracts_cap_breakdown (derived from contracts.cols) can build after.
+    # Actually contracts is in the player-linked block below; add the
+    # cap_breakdown derived table after it.
     # Player-linked children (FK to players via various IDs)
     "weekly_rosters",        # load early; also contributes to hub but as own table
     "combine",
@@ -1176,6 +1266,7 @@ LOAD_ORDER: list = [
     "qbr",
     "injuries",
     "contracts",
+    "contracts_cap_breakdown",  # derived from contracts.cols struct array
     # Game-linked children
     "officials",
     "team_game_stats",
@@ -1336,7 +1427,7 @@ def validate_config(manifest: dict | None = None) -> list[str]:
                 )
 
     for tname, t in TABLES.items():
-        if t.get("build_via") == "hub":
+        if t.get("build_via") in ("hub", "sql"):
             continue
         src = t.get("source_id")
         srcs = t.get("source_ids", [])

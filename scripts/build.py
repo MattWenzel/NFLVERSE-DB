@@ -61,6 +61,7 @@ def _preflight_child_fk_stubs(hub_df: pd.DataFrame, cfg) -> pd.DataFrame:
         "players.player_gsis_id":  "player_gsis_id",
         "players.player_pfr_id":   "player_pfr_id",
         "players.player_espn_id":  "player_espn_id",
+        "players.pff_id":          "pff_id",
     }
 
     # Collect unresolved IDs per hub column
@@ -230,6 +231,33 @@ def build(output_path: Path, include_pbp: bool = True, validate_after: bool = Tr
             spec = cfg.TABLES[tname]
             if spec.get("build_via") == "hub":
                 continue
+
+            # Derived tables (build_via='sql'): built from already-loaded
+            # parents via a declared SQL query. Skipped during incremental.
+            if spec.get("build_via") == "sql":
+                if incremental:
+                    print(f"  SKIP {tname:<24} (derived; rebuild not needed incrementally)")
+                    continue
+                sql = spec["sql_query"]
+                pk = spec.get("primary_key")
+                print(f"  {tname:<24}", end=" ", flush=True)
+                t0 = time.time()
+                conn.execute(f'DROP TABLE IF EXISTS "{tname}"')
+                if pk:
+                    # Two-step: stage → recreate with UNIQUE(pk) for FK targeting.
+                    conn.execute(f'CREATE TEMP TABLE "_stage_{tname}" AS {sql}')
+                    described = conn.execute(f'DESCRIBE "_stage_{tname}"').fetchall()
+                    col_defs = [f'"{r[0]}" {r[1]}' for r in described]
+                    body = ",\n    ".join(col_defs + [f'UNIQUE ("{pk}")'])
+                    conn.execute(f'CREATE TABLE "{tname}" (\n    {body}\n)')
+                    conn.execute(f'INSERT INTO "{tname}" SELECT * FROM "_stage_{tname}"')
+                    conn.execute(f'DROP TABLE "_stage_{tname}"')
+                else:
+                    conn.execute(f'CREATE TABLE "{tname}" AS {sql}')
+                n = conn.execute(f'SELECT COUNT(*) FROM "{tname}"').fetchone()[0]
+                print(f"{n:>10,} rows  ({time.time()-t0:.1f}s)  [derived]")
+                continue
+
             # Incremental: only touch year-partitioned tables
             src_id = spec.get("source_id") or (spec.get("source_ids") or [None])[0]
             is_year_partitioned = False
