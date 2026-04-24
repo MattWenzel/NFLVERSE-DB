@@ -16,8 +16,8 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts" / "v2"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 
 from loaders import load_source  # noqa: E402
 
@@ -176,6 +176,92 @@ def apply_id_backfill(conn: duckdb.DuckDBPyConnection, table_name: str,
         pct = (n / total * 100) if total else 0
         print(f"    id_backfill: {table_name}.{new_col} filled in "
               f"{n:,}/{total:,} rows ({pct:.0f}%)")
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: name-match GSIS recovery on child tables
+# ---------------------------------------------------------------------------
+
+def apply_name_match_recovery(conn: duckdb.DuckDBPyConnection, table_name: str,
+                              recovery_spec: dict) -> int:
+    """For rows in `table_name` where `target_column` is NULL but a name column
+    is populated, look up a matching player in `players` by display_name and
+    fill the target column when the match is unambiguous.
+
+    Spec shape (from TABLES[x]['name_match_recovery']):
+        {"target_column": "player_gsis_id",
+         "name_columns": ["pfr_player_name", "player_display_name", ...]}
+
+    Match policy:
+      - display_name equals the child's name column (exact, case-sensitive).
+      - If `season` exists on both sides, child.season must fall within
+        players.rookie_season..last_season (NULL bounds accepted).
+      - Exactly one unambiguous match required; multiple candidate GSIS
+        values → skip the row (v1's "conservative" semantics).
+
+    Mirrors v1's recover_gsis_by_name. For draft_picks this fills ~7,100
+    pre-GSIS HoF-era picks whose GSIS isn't in any upstream source but whose
+    name matches an existing hub player active in that season.
+    """
+    target_col = recovery_spec["target_column"]
+    name_cols = recovery_spec.get("name_columns", [])
+
+    table_cols = {r[0] for r in conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema='main' AND table_name=?", [table_name]
+    ).fetchall()}
+    if target_col not in table_cols:
+        return 0
+
+    # Pick the first available name column
+    name_col = next((c for c in name_cols if c in table_cols), None)
+    if name_col is None:
+        return 0
+
+    has_season = "season" in table_cols
+
+    # Build (child_id, gsis) candidate pairs and keep only rows with a single
+    # unambiguous match.
+    season_filter = ""
+    if has_season:
+        season_filter = (
+            " AND (p.rookie_season IS NULL OR c.season >= p.rookie_season) "
+            " AND (p.last_season   IS NULL OR c.season <= p.last_season) "
+        )
+
+    # We need a row identity — DuckDB's rowid is stable within a transaction.
+    conn.execute("DROP TABLE IF EXISTS _nmr_candidates")
+    conn.execute(f"""
+        CREATE TEMP TABLE _nmr_candidates AS
+        SELECT c.rowid AS _child_rowid, p.player_gsis_id AS gsis
+        FROM "{table_name}" c
+        JOIN players p ON p.display_name = c."{name_col}"
+        WHERE c."{target_col}" IS NULL
+          AND p.player_gsis_id IS NOT NULL
+          {season_filter}
+    """)
+    # Reduce to unambiguous matches
+    n = conn.execute(f"""
+        UPDATE "{table_name}"
+        SET "{target_col}" = m.gsis
+        FROM (
+            SELECT _child_rowid, MIN(gsis) AS gsis
+            FROM _nmr_candidates
+            GROUP BY _child_rowid
+            HAVING COUNT(DISTINCT gsis) = 1
+        ) m
+        WHERE "{table_name}".rowid = m._child_rowid
+    """).fetchone()
+    conn.execute("DROP TABLE _nmr_candidates")
+
+    filled = conn.execute(
+        f'SELECT COUNT(*) FROM "{table_name}" WHERE "{target_col}" IS NOT NULL'
+    ).fetchone()[0]
+    total = conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
+    pct = (filled / total * 100) if total else 0
+    print(f"    name_match_recovery({table_name}.{target_col}): "
+          f"now {filled:,}/{total:,} ({pct:.0f}%)")
+    return filled
 
 
 # ---------------------------------------------------------------------------

@@ -40,10 +40,10 @@ from pathlib import Path
 
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts" / "v2"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 
-from loaders import load_source
+from loaders import load_source  # noqa: E402
 
 HUB_COLUMNS = [
     # Identity

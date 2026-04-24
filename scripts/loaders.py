@@ -8,7 +8,7 @@ Operations applied, in order:
   1. Resolve parquet path(s) per year_range
   2. Read + (for year-partitioned sources) concat via union_by_name
   3. Apply `renames`
-  4. Apply `id_cleanup` (uses scripts/v2/cleanup.py:clean_id)
+  4. Apply `id_cleanup` (uses scripts/cleanup.py:clean_id)
   5. Apply `force_types` casts (best-effort; skips columns that don't exist)
   6. Apply `ensure_columns` (add missing columns as typed NULLs)
   7. Apply `add_literal_columns` (add a constant column; e.g. stat_type='pass')
@@ -28,9 +28,9 @@ import pandas as pd
 
 from cleanup import clean_id
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from config import RAW_DATA_PATH  # v1 scripts/config.py - path constants
+from config import RAW_DATA_PATH  # noqa: E402 — path constants
 
 
 def _expand_years(source_spec: dict, raw_root: Path) -> list[int] | None:

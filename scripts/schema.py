@@ -1,7 +1,7 @@
-"""Declarative description of the v2 DB shape.
+"""Declarative description of the NFLVERSE DB shape.
 
 Single source of truth. Every SOURCE we consume, every TABLE we produce,
-every FK edge, every fill rule, every index. The engine (scripts/v2/engine.py)
+every FK edge, every fill rule, every index. The engine (scripts/engine.py)
 interprets this file uniformly — no per-table special-case code elsewhere.
 
 Structure:
@@ -24,7 +24,7 @@ Structure:
 
 Conventions:
   - id_cleanup kind: 'generic' (strip junk sentinels) or 'gsis' (require
-    canonical GSIS regex). See scripts/v2/cleanup.py.
+    canonical GSIS regex). See scripts/cleanup.py.
   - references syntax: "table.column" — engine parses to (table, column).
   - year_range: ("auto", "auto") means discover from raw files; otherwise
     (min_year, max_year) or a fixed list.
@@ -183,14 +183,16 @@ SOURCES: dict = {
     "pfr_advanced_season_rush": {
         "release_tag": "pfr_advstats",
         "pattern": "pfr_advstats/advstats_season_rush.parquet",
-        "renames": {"pfr_id": "player_pfr_id", "tm": "team"},
+        # Keep native `tm` (v1 consumer-compat). The pass variant has `team`
+        # natively; concat preserves both columns, matching v1 behavior.
+        "renames": {"pfr_id": "player_pfr_id"},
         "id_cleanup": {"player_pfr_id": "generic"},
         "add_literal_columns": {"stat_type": "rush"},
     },
     "pfr_advanced_season_rec": {
         "release_tag": "pfr_advstats",
         "pattern": "pfr_advstats/advstats_season_rec.parquet",
-        "renames": {"pfr_id": "player_pfr_id", "tm": "team"},
+        "renames": {"pfr_id": "player_pfr_id"},
         "id_cleanup": {"player_pfr_id": "generic"},
         "add_literal_columns": {"stat_type": "rec"},
     },
@@ -198,7 +200,7 @@ SOURCES: dict = {
         # NEW in v2 (v1 missed this file — 7,537 rows × 30 cols of defensive advanced stats)
         "release_tag": "pfr_advstats",
         "pattern": "pfr_advstats/advstats_season_def.parquet",
-        "renames": {"pfr_id": "player_pfr_id", "tm": "team"},
+        "renames": {"pfr_id": "player_pfr_id"},
         "id_cleanup": {"player_pfr_id": "generic"},
         "add_literal_columns": {"stat_type": "def"},
     },
@@ -337,11 +339,12 @@ SOURCES: dict = {
     "qbr_week": {
         "release_tag": "espn_data",
         "pattern": "espn_data/qbr_week_level.parquet",
-        # ESPN's game_id is a numeric ESPN ID, not our nflverse game_id
-        # (2024_01_KC_BUF format). Rename to avoid collision; keep as
-        # informational column for ESPN cross-reference.
-        "renames": {"player_id": "player_espn_id", "game_id": "espn_game_id"},
-        "id_cleanup": {"player_espn_id": "generic", "espn_game_id": "generic"},
+        # Keep native `game_id` column name (v1 consumer-compat). Values are
+        # ESPN's numeric format (e.g. '260910009'), NOT our nflverse
+        # `game_id` namespace — so NO FK to games.game_id. Documented in the
+        # DATABASE.md schema notes as an ESPN-namespace column.
+        "renames": {"player_id": "player_espn_id"},
+        "id_cleanup": {"player_espn_id": "generic", "game_id": "generic"},
     },
     "qbr_season": {
         "release_tag": "espn_data",
@@ -977,8 +980,8 @@ VIEWS: dict = {
         # Composite: UNION of depth_charts (2001-2024) + depth_charts_2025 with
         # normalized column set. Same semantics as v1 (NFL-calendar-adjusted
         # season, games-lookup week for 2025, pos_abb-to-position mapping).
-        # Definition lives in scripts/v2/views.py because the SQL is substantial.
-        "defined_in": "scripts/v2/views.py::v_depth_charts_sql",
+        # Definition lives in scripts/views.py because the SQL is substantial.
+        "defined_in": "scripts/views.py::v_depth_charts_sql",
         "requires_tables": ["depth_charts", "depth_charts_2025", "games"],
     },
 }
@@ -1112,14 +1115,14 @@ def validate_config(manifest: dict | None = None) -> list[str]:
 if __name__ == "__main__":
     import json
     from pathlib import Path
-    manifest_path = Path(__file__).resolve().parents[2] / "data" / "nflverse_manifest.json"
+    manifest_path = Path(__file__).resolve().parents[1] / "data" / "nflverse_manifest.json"
     manifest = None
     if manifest_path.exists():
         with manifest_path.open() as f:
             manifest = json.load(f)
         print(f"(manifest loaded: {len(manifest['nflverse_releases'])} releases)")
     else:
-        print("(no manifest found — structural checks only; run scripts/v2/catalog.py first)")
+        print("(no manifest found — structural checks only; run scripts/catalog.py first)")
     errs = validate_config(manifest)
     if errs:
         print("Config validation FAILED:")

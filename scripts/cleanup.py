@@ -1,8 +1,7 @@
-"""Single ID-column cleanup function for v2.
+"""Single ID-column cleanup function.
 
-Replaces v1's four-function maze (clean_id / clean_gsis_id / clean_id_series /
-clean_gsis_id_series). One function, two modes, applied uniformly at source-
-load time from the config's declared `id_columns` mapping.
+One function, two modes, applied uniformly at source-load time from the
+config's declared `id_cleanup` mapping.
 
 Sentinels nflverse uses for "no ID":
   - Empty string

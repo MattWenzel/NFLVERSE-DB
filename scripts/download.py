@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""
-Download raw nflverse data files from GitHub into data/raw/.
+"""Download every raw file declared in scripts/schema.py:SOURCES.
 
-Downloads parquet files from nflverse-data GitHub releases and CSV files
-from external sources. Files are organized by release tag.
+Derives URLs from the manifest (scripts/catalog.py output). Files land in
+data/raw/<subfolder>/<filename>. Skips already-downloaded files unless --force.
+
+Any source declared in schema.SOURCES gets pulled here — no parallel
+DOWNLOAD_MAP to keep in sync.
 
 Usage:
-    python3 scripts/download.py --all                              # Everything
-    python3 scripts/download.py --tables game_stats players        # Specific tables
-    python3 scripts/download.py --tables game_stats --years 2025   # Specific years
-    python3 scripts/download.py --pbp --all                        # Play-by-play
-    python3 scripts/download.py --pbp --years 2025                 # PBP for one year
-    python3 scripts/download.py --force                            # Re-download existing
-    python3 scripts/download.py --dry-run                          # Preview only
+    python3 scripts/download.py                       # all sources, current year + prior
+    python3 scripts/download.py --all                 # all years
+    python3 scripts/download.py --sources weekly_rosters injuries
+    python3 scripts/download.py --years 2024 2025
+    python3 scripts/download.py --force               # re-download existing
 """
 
+from __future__ import annotations
+
 import argparse
+import json
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -23,216 +27,162 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlretrieve
 
-from config import RAW_DATA_PATH, YEAR_RANGE_START
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 
-NFLVERSE_BASE = "https://github.com/nflverse/nflverse-data/releases/download"
+from config import RAW_DATA_PATH  # noqa: E402 — path constants
+from schema import SOURCES  # noqa: E402 — declarative DB config
 
+MANIFEST_PATH = ROOT / "data" / "nflverse_manifest.json"
+GH_DOWNLOAD = "https://github.com/nflverse/nflverse-data/releases/download"
 CURRENT_YEAR = datetime.now().year
 
-# table name -> download spec
-DOWNLOAD_MAP = {
-    # Year-partitioned parquet from nflverse-data releases
-    "game_stats": {
-        "tag": "stats_player",
-        "pattern": "stats_player_week_{year}.parquet",
-        "years": (YEAR_RANGE_START["game_stats"], CURRENT_YEAR),
-    },
-    "season_stats": {
-        "tag": "stats_player",
-        # Both REG and POST aggregates from nflverse. POST was overlooked in
-        # the original config; without it we had zero season-level POST rows
-        # (visible as the 12K gap game_stats → season_stats).
-        "patterns": [
-            "stats_player_reg_{year}.parquet",
-            "stats_player_post_{year}.parquet",
-        ],
-        "years": (YEAR_RANGE_START["season_stats"], CURRENT_YEAR),
-    },
-    "games": {
-        "tag": "schedules",
-        "files": ["games.parquet"],
-    },
-    "snap_counts": {
-        "tag": "snap_counts",
-        "pattern": "snap_counts_{year}.parquet",
-        "years": (YEAR_RANGE_START["snap_counts"], CURRENT_YEAR),
-    },
-    "depth_charts": {
-        "tag": "depth_charts",
-        "pattern": "depth_charts_{year}.parquet",
-        "years": (YEAR_RANGE_START["depth_charts"], CURRENT_YEAR),
-    },
-    # Single-file parquet from nflverse-data releases
-    "players": {
-        "tag": "players",
-        "files": ["players.parquet"],
-    },
-    "player_ids": {
-        "url": "https://github.com/dynastyprocess/data/raw/master/files/db_playerids.csv",
-        "subfolder": "external",
-        "files": ["db_playerids.csv"],
-    },
-    "draft_picks": {
-        "tag": "draft_picks",
-        "files": ["draft_picks.parquet"],
-    },
-    "combine": {
-        "tag": "combine",
-        "files": ["combine.parquet"],
-    },
-    "ngs_stats": {
-        "tag": "nextgen_stats",
-        "files": ["ngs_passing.parquet", "ngs_rushing.parquet", "ngs_receiving.parquet"],
-    },
-    "pfr_advanced": {
-        "tag": "pfr_advstats",
-        "files": ["advstats_season_pass.parquet", "advstats_season_rush.parquet", "advstats_season_rec.parquet"],
-    },
-    "qbr": {
-        "url": "https://raw.githubusercontent.com/nflverse/espnscrapeR-data/master/data/qbr-nfl-weekly.csv",
-        "subfolder": "external",
-        "files": ["qbr-nfl-weekly.csv"],
-    },
-    # Play-by-play (separate DB, very large)
-    "play_by_play": {
-        "tag": "pbp",
-        "pattern": "play_by_play_{year}.parquet",
-        "years": (YEAR_RANGE_START["play_by_play"], CURRENT_YEAR),
-    },
-}
 
-# Tables that belong to the PBP database
-PBP_TABLES = {"play_by_play"}
+def load_manifest() -> dict:
+    if not MANIFEST_PATH.exists():
+        raise SystemExit(f"Manifest missing: {MANIFEST_PATH}. Run scripts/catalog.py first.")
+    with MANIFEST_PATH.open() as f:
+        return json.load(f)
 
 
-def download_file(url, local_path, force=False):
-    """Download a single file. Returns (status, message) where status is one of
-    'ok', 'skip', 'error'."""
-    if local_path.exists() and local_path.stat().st_size > 0 and not force:
-        return "skip", f"  {local_path.name} (exists)"
+def resolve_source_files(source_id: str, source_spec: dict, manifest: dict,
+                         years: list[int] | None) -> list[tuple[str, Path]]:
+    """For one SOURCES entry, return (url, local_path) pairs to fetch.
 
-    local_path.parent.mkdir(parents=True, exist_ok=True)
+    Handles external sources (direct URL) and nflverse releases (computed
+    from release_tag + pattern).
+    """
+    pattern = source_spec["pattern"]  # e.g. "snap_counts/snap_counts_{year}.parquet"
+    release_tag = source_spec.get("release_tag")
 
-    try:
-        urlretrieve(url, local_path)
-        size_mb = local_path.stat().st_size / (1024 * 1024)
-        return "ok", f"  {local_path.name} ({size_mb:.1f} MB)"
-    except (HTTPError, URLError, OSError) as e:
-        if local_path.exists():
-            local_path.unlink()
-        return "error", f"  {local_path.name} FAILED: {e}"
+    # External sources: direct URL stored in manifest under external_sources
+    if release_tag == "_external":
+        ext = manifest.get("external_sources", {})
+        # Match by the local_path == pattern
+        matched = None
+        for k, v in ext.items():
+            if v.get("local_path") == pattern.removeprefix("external/"):
+                matched = v
+                break
+            if pattern.endswith(v.get("local_path", "__never__")):
+                matched = v
+                break
+        # Fall back: db_playerids special-case
+        if matched is None and "db_playerids" in source_id:
+            matched = ext.get("dynastyprocess_db_playerids")
+        if matched is None:
+            print(f"  WARN: external source {source_id!r} unresolved in manifest")
+            return []
+        local = RAW_DATA_PATH / pattern
+        return [(matched["url"], local)]
 
+    # nflverse release — patterns live under the release's subfolder locally.
+    # Determine the release asset pattern (the filename portion only):
+    asset_pattern = pattern.rsplit("/", 1)[-1]
+    local_subdir = pattern.rsplit("/", 1)[0] if "/" in pattern else release_tag
 
-def get_files_for_table(table_name, years=None):
-    """Return list of (url, local_path) tuples for a table."""
-    spec = DOWNLOAD_MAP[table_name]
-    results = []
-
-    if "pattern" in spec or "patterns" in spec:
-        # Year-partitioned. `patterns` (list) supports multiple files per
-        # year under the same release tag (e.g. REG + POST season stats).
-        start, end = spec["years"]
+    out = []
+    if "{year}" in asset_pattern:
+        # year-partitioned; resolve years from the manifest
+        rel = manifest["nflverse_releases"].get(release_tag, {})
+        manifest_pats = rel.get("patterns", [])
+        manifest_years: set[int] = set()
+        for p in manifest_pats:
+            # A specific filename like "depth_charts_2025.parquet" can be
+            # satisfied by a manifest pattern like "depth_charts_{year}.parquet"
+            # with year 2025 in its years list. Check both direct match and
+            # regex match.
+            if p["pattern"] == asset_pattern:
+                manifest_years.update(p.get("years", []) or [])
+            else:
+                regex = "^" + re.escape(p["pattern"]).replace(r"\{year\}", r"(\d{4})") + "$"
+                m = re.match(regex, asset_pattern)
+                if m:
+                    manifest_years.update(p.get("years", []) or [])
+        # Intersect with requested years (if any)
+        year_range = source_spec.get("year_range", ("auto", "auto"))
+        lo, hi = year_range
+        if lo == "auto":
+            lo = min(manifest_years) if manifest_years else 1999
+        if hi == "auto":
+            hi = max(manifest_years) if manifest_years else CURRENT_YEAR
+        eligible = {y for y in manifest_years if lo <= y <= hi}
         if years:
-            file_years = [y for y in years if start <= y <= end]
-        else:
-            file_years = list(range(start, end + 1))
-
-        tag = spec["tag"]
-        subfolder = spec.get("subfolder", tag)
-        patterns = spec.get("patterns") or [spec["pattern"]]
-        for year in file_years:
-            for pat in patterns:
-                filename = pat.format(year=year)
-                url = f"{NFLVERSE_BASE}/{tag}/{filename}"
-                local = RAW_DATA_PATH / subfolder / filename
-                results.append((url, local))
-    elif "url" in spec:
-        # External source (single direct URL)
-        subfolder = spec.get("subfolder", "external")
-        for filename in spec["files"]:
-            local = RAW_DATA_PATH / subfolder / filename
-            results.append((spec["url"], local))
+            eligible &= set(years)
+        for y in sorted(eligible):
+            filename = asset_pattern.replace("{year}", str(y))
+            url = f"{GH_DOWNLOAD}/{release_tag}/{filename}"
+            local = RAW_DATA_PATH / local_subdir / filename
+            out.append((url, local))
     else:
-        # Single-file from nflverse-data release
-        tag = spec["tag"]
-        subfolder = spec.get("subfolder", tag)
-        for filename in spec["files"]:
-            url = f"{NFLVERSE_BASE}/{tag}/{filename}"
-            local = RAW_DATA_PATH / subfolder / filename
-            results.append((url, local))
+        # single file
+        url = f"{GH_DOWNLOAD}/{release_tag}/{asset_pattern}"
+        local = RAW_DATA_PATH / local_subdir / asset_pattern
+        out.append((url, local))
+    return out
 
-    return results
+
+def download_one(url: str, local: Path, force: bool) -> tuple[str, str]:
+    if local.exists() and local.stat().st_size > 0 and not force:
+        return "skip", f"{local.name} (exists)"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        urlretrieve(url, local)
+        kb = local.stat().st_size / 1024
+        return "ok", f"{local.name} ({kb:.0f} KB)"
+    except (HTTPError, URLError, OSError) as e:
+        if local.exists():
+            local.unlink()
+        return "error", f"{local.name} FAILED: {e}"
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download nflverse data files")
-    parser.add_argument("--tables", nargs="+", help="Specific table(s) to download")
-    parser.add_argument("--years", nargs="+", type=int, help="Specific year(s) for year-partitioned data")
-    parser.add_argument("--pbp", action="store_true", help="Include play-by-play (large)")
-    parser.add_argument("--all", action="store_true", help="Download all years (not just current)")
-    parser.add_argument("--force", action="store_true", help="Re-download existing files")
-    parser.add_argument("--dry-run", action="store_true", help="Preview what would download")
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--sources", nargs="+",
+                        help="Restrict to these source_ids (default: all)")
+    parser.add_argument("--years", nargs="+", type=int,
+                        help="Restrict to these years for year-partitioned sources")
+    parser.add_argument("--all", action="store_true",
+                        help="Download all years (default: current year only)")
+    parser.add_argument("--force", action="store_true",
+                        help="Re-download files that already exist")
     parser.add_argument("--workers", type=int, default=8,
-                        help="Parallel download workers (default: 8). "
-                             "Progress is shown in completion order, not input order.")
+                        help="Parallel download workers")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="List what would download, don't fetch")
     args = parser.parse_args()
 
-    # Determine which tables
-    if args.tables:
-        table_names = args.tables
-    else:
-        # All non-PBP tables by default
-        table_names = [t for t in DOWNLOAD_MAP if t not in PBP_TABLES]
+    manifest = load_manifest()
 
-    if args.pbp:
-        if "play_by_play" not in table_names:
-            table_names.append("play_by_play")
-
-    # Validate
-    for name in table_names:
-        if name not in DOWNLOAD_MAP:
-            print(f"ERROR: Unknown table '{name}'")
-            print(f"Available: {', '.join(sorted(DOWNLOAD_MAP.keys()))}")
+    source_ids = args.sources if args.sources else list(SOURCES.keys())
+    for sid in source_ids:
+        if sid not in SOURCES:
+            print(f"ERROR: unknown source {sid!r}. Known: {sorted(SOURCES)}")
             sys.exit(1)
 
-    # Determine years
-    years = None
-    if args.years:
-        years = sorted(args.years)
-    elif not args.all:
-        years = [CURRENT_YEAR]
+    # Default to current year only, --all for full range
+    years = args.years if args.years else (None if args.all else [CURRENT_YEAR - 1, CURRENT_YEAR])
 
-    # Build file list
-    all_files = []
-    for table in table_names:
-        all_files.extend(get_files_for_table(table, years))
+    files: list[tuple[str, Path]] = []
+    for sid in source_ids:
+        files.extend(resolve_source_files(sid, SOURCES[sid], manifest, years))
 
-    print(f"nflverse Data Download — {len(all_files)} files")
+    print(f"nflverse downloader: {len(files)} files across {len(source_ids)} sources")
     if args.dry_run:
-        print("*** DRY RUN ***\n")
-        for url, local in all_files:
-            exists = "exists" if local.exists() else "missing"
-            print(f"  {local.relative_to(RAW_DATA_PATH)} ({exists})")
+        for url, local in files:
+            mark = "exists" if local.exists() and local.stat().st_size > 0 else "missing"
+            print(f"  [{mark:<7}] {local.relative_to(RAW_DATA_PATH)}")
         return
 
-    print()
-    total = len(all_files)
     counts = {"ok": 0, "skip": 0, "error": 0}
-
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-        futures = [
-            pool.submit(download_file, url, local, args.force)
-            for url, local in all_files
-        ]
+        futures = {pool.submit(download_one, u, l, args.force): (u, l) for u, l in files}
         for i, fut in enumerate(as_completed(futures), 1):
-            status, message = fut.result()
+            status, msg = fut.result()
             counts[status] += 1
-            print(f"[{i}/{total}] {message.lstrip()}", flush=True)
+            print(f"[{i}/{len(files)}] {msg}", flush=True)
 
-    ok, skip, errors = counts["ok"], counts["skip"], counts["error"]
-    print(f"\nDone: {ok} downloaded, {skip} skipped (already exist), {errors} errors")
-    if skip and not args.force:
-        print("Use --force to re-download existing files")
+    print(f"\nDone: {counts['ok']} downloaded, {counts['skip']} skipped, {counts['error']} errors")
 
 
 if __name__ == "__main__":

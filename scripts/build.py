@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""v2 build orchestrator.
+"""NFLVERSE build orchestrator.
 
-Composes loaders + hub + engine primitives into a full DB build. One phase
-ordering; no per-table special cases; config-driven.
+Composes loaders + hub + engine primitives into a full DB build. Single
+phase ordering; no per-table special cases; config-driven by `schema.py`.
 
 Usage:
-    python3 scripts/v2/build.py                                 # full build to data/nflverse.duckdb.v2
-    python3 scripts/v2/build.py --output data/my.duckdb
-    python3 scripts/v2/build.py --no-pbp                        # skip play_by_play
-    python3 scripts/v2/build.py --no-validate                   # skip post-build checks
+    python3 scripts/build.py                                 # full build (all tables, incl PBP)
+    python3 scripts/build.py --output data/my.duckdb
+    python3 scripts/build.py --no-pbp                        # skip play_by_play
+    python3 scripts/build.py --no-validate                   # skip post-build checks
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import sys
 import time
 from pathlib import Path
@@ -22,25 +21,11 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[2]
-# IMPORTANT: insert scripts/v2 FIRST, then scripts/, so that sys.path has
-# scripts/ in front of scripts/v2. This makes `import config` resolve to
-# v1's scripts/config.py (for RAW_DATA_PATH etc.) while `import hub`,
-# `import engine`, `import loaders` resolve to v2 (they don't exist in v1).
-# v2's config is loaded as a separate module via _load_v2_config().
-sys.path.insert(0, str(ROOT / "scripts" / "v2"))
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-DEFAULT_DB_PATH = ROOT / "data" / "nflverse.duckdb.v2"
-
-
-def _load_v2_config():
-    spec = importlib.util.spec_from_file_location(
-        "v2_config", ROOT / "scripts" / "v2" / "config.py"
-    )
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
-    return m
+import schema  # noqa: E402 — declarative DB config (SOURCES / TABLES / HUB_BUILD / FILL_RULES / LOAD_ORDER)
+from config import DB_PATH  # noqa: E402 — path constants
 
 
 def _augment_foreign_keys_with_backfill(table_spec: dict) -> list[dict]:
@@ -165,7 +150,7 @@ def _ensure_backfill_columns(df: pd.DataFrame, table_spec: dict) -> pd.DataFrame
 
 
 def build(output_path: Path, include_pbp: bool = True, validate_after: bool = True) -> dict:
-    cfg = _load_v2_config()
+    cfg = schema
     from hub import build_hub
     from engine import (
         table_source_df, write_table, apply_id_backfill,
@@ -174,7 +159,7 @@ def build(output_path: Path, include_pbp: bool = True, validate_after: bool = Tr
     )
 
     start = time.time()
-    print(f"v2 build → {output_path}")
+    print(f"nflverse build → {output_path}")
     print(f"  (source dir: {ROOT / 'data' / 'raw'})")
 
     # Clean start
@@ -244,9 +229,19 @@ def build(output_path: Path, include_pbp: bool = True, validate_after: bool = Tr
                 apply_id_backfill(conn, tname, rules)
 
         # ---- Phase 6: name-match recovery on declared tables ----
-        # (Future work — declared via TABLES[x]['name_match_recovery'] in v2 config,
-        # but GSIS recovery already happens in the hub's preflight phase, so
-        # most child-level recovery is moot. Skip for now.)
+        # For child rows still missing a player_gsis_id after Phase 5 backfill
+        # where a name column is populated, look up an unambiguous display_name
+        # match in players (optionally season-active-range-gated) and fill.
+        # Load-bearing for draft_picks (fills ~7,100 pre-GSIS HoF-era picks
+        # whose GSIS isn't in any upstream source).
+        print("\n[Phase 6] Name-match recovery")
+        from engine import apply_name_match_recovery
+        for tname in load_order:
+            if tname not in cfg.TABLES:
+                continue
+            spec = cfg.TABLES[tname].get("name_match_recovery")
+            if spec:
+                apply_name_match_recovery(conn, tname, spec)
 
         # ---- Phase 7: fill rules ----
         print("\n[Phase 7] Fill rules")
@@ -306,7 +301,7 @@ def build(output_path: Path, include_pbp: bool = True, validate_after: bool = Tr
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--output", type=str, default=str(DEFAULT_DB_PATH))
+    parser.add_argument("--output", type=str, default=str(DB_PATH))
     parser.add_argument("--no-pbp", action="store_true")
     parser.add_argument("--no-validate", action="store_true")
     args = parser.parse_args()

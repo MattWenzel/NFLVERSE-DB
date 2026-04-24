@@ -3,7 +3,7 @@
 
 Output: data/nflverse_manifest.json. Single source of truth for what sources
 exist, their file patterns, year spans, column schemas, and which columns are
-IDs. The v2 build config (scripts/v2/config.py) references patterns from this
+IDs. The build config (scripts/schema.py) references patterns from this
 manifest; the build validates that every declared source resolves here.
 
 Why this exists: v1 missed stats_player_post_*.parquet (12K POST-season rows)
@@ -11,9 +11,9 @@ for months because nobody systematically diffed GitHub against download.py.
 Regenerating this file after each nflverse release surfaces drift.
 
 Run:
-    python3 scripts/v2/catalog.py
-    python3 scripts/v2/catalog.py --no-probe     # skip column sampling
-    python3 scripts/v2/catalog.py --release snap_counts  # refresh one release
+    python3 scripts/catalog.py
+    python3 scripts/catalog.py --no-probe     # skip column sampling
+    python3 scripts/catalog.py --release snap_counts  # refresh one release
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from pathlib import Path
 
 import duckdb
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from config import RAW_DATA_PATH  # noqa: E402
 
