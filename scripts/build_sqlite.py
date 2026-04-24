@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Mirror the v2 DuckDB to a SQLite sibling.
+"""Mirror the DuckDB to a SQLite sibling.
 
-Same approach as v1's scripts/build_sqlite.py: generate DDL with explicit
-FK + UNIQUE constraints via sqlite3, bulk-copy rows via DuckDB's sqlite_scanner
-extension, then verify row-count parity + FK integrity.
+Approach: generate DDL with explicit UNIQUE + FK constraints (including
+composite) via sqlite3, bulk-copy rows via DuckDB's sqlite_scanner extension,
+then verify row-count parity + FK integrity.
 
 Discovers the schema + FK graph directly from the source DuckDB — no hardcoded
-table list — so any v2 additions ship automatically.
+table list — so any new tables in scripts/schema.py ship automatically.
 
 Usage:
-    python3 scripts/v2/build_sqlite.py                        # mirror .v2 → .sqlite
-    python3 scripts/v2/build_sqlite.py --source data/x.duckdb --output data/y.sqlite
+    python3 scripts/build_sqlite.py                                    # data/nflverse.duckdb → data/nflverse.sqlite
+    python3 scripts/build_sqlite.py --source data/x.duckdb --output data/y.sqlite
+    python3 scripts/build_sqlite.py --no-vacuum                        # skip final VACUUM (~30s)
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@ DDL generation and table writes from config + a loaded DataFrame.
 Fill-rule execution in SQL.
 Post-build validation.
 
-The build orchestrator lives in scripts/v2/build.py which composes these
+The build orchestrator lives in scripts/build.py which composes these
 primitives with hub.build_hub and loaders.load_source.
 """
 

@@ -324,7 +324,7 @@ def build(output_path: Path, include_pbp: bool = True, validate_after: bool = Tr
         # ---- Phase 8: views ----
         print("\n[Phase 8] Views")
         # v_depth_charts — kept as a view (composite across depth_charts +
-        # depth_charts_2025). SQL from scripts/v2/views.py.
+        # depth_charts_2025). SQL from scripts/views.py.
         try:
             from views import v_depth_charts_sql
             conn.execute("DROP VIEW IF EXISTS v_depth_charts")
