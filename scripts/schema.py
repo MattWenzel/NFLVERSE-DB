@@ -355,10 +355,9 @@ SOURCES: dict = {
         "year_range": (2022, "auto"),
         "renames": {"nflverse_game_id": "game_id", "nflverse_play_id": "play_id"},
         "id_cleanup": {"game_id": "generic", "ftn_game_id": "generic"},
-        # FTN publishes nflverse_play_id as INTEGER; pbp uses DOUBLE. Coerce
-        # so the composite FK (game_id, play_id) → play_by_play has matching
-        # types.
-        "force_types": {"play_id": "DOUBLE"},
+        # Note: previously had `force_types: {play_id: DOUBLE}` to match pbp's
+        # DOUBLE type for a composite FK; that FK was dropped for performance,
+        # so the cast is no longer needed. Native INTEGER preserved.
     },
 
     # -------- nflverse_releases: officials (NEW) --------
@@ -411,6 +410,25 @@ SOURCES: dict = {
         "year_range": ("auto", "auto"),
         "renames": {},
         "id_cleanup": {},
+    },
+
+    # -------- nflverse_releases: teams (NEW in audit 3) --------
+    "teams": {
+        # Display-ready metadata for every team abbreviation that ever appears
+        # in the DB: conference/division, colors, logos, wordmark, nickname.
+        # 36 rows.
+        "release_tag": "teams",
+        "pattern": "teams/teams_colors_logos.parquet",
+        "renames": {},
+        "id_cleanup": {},
+    },
+
+    # -------- nflverse_releases: trades (NEW in audit 3) --------
+    "trades": {
+        "release_tag": "trades",
+        "pattern": "trades/trades.parquet",
+        "renames": {"pfr_id": "player_pfr_id"},
+        "id_cleanup": {"player_pfr_id": "generic"},
     },
 
     # -------- external: dynastyprocess db_playerids --------
@@ -670,6 +688,29 @@ TABLES: dict = {
                 yb.option_bonus          AS option_bonus
             FROM flat
         """,
+    },
+
+    "teams": {
+        # NEW in audit 3. Display metadata + conference/division + colors +
+        # logos for every team abbreviation. team_abbr is the canonical key
+        # used in every other table's team column (home_team, away_team,
+        # recent_team, team, etc.). Not declared as an FK target because 6
+        # historical-variant codes appear across the DB (ARZ/BLT/CLV/HST/JAC/
+        # SL) that aren't in this file — would reject inserts. Consumers
+        # LEFT JOIN as needed.
+        "source_id": "teams",
+        "primary_key": "team_abbr",
+    },
+
+    "trades": {
+        # NEW in audit 3. Player/pick trades, 1999-present.
+        # pfr_id (renamed to player_pfr_id) is FK-able where populated;
+        # ~40% of trade rows are pick-only (no player), hence LEFT JOIN on
+        # consumer side.
+        "source_id": "trades",
+        "foreign_keys": [
+            {"column": "player_pfr_id", "references": "players.player_pfr_id"},
+        ],
     },
 
     "stadiums": {
@@ -1222,6 +1263,66 @@ FILL_RULES: list = [
         "source_column": "player_espn_id",
         "join": [("weekly_rosters.player_gsis_id", "players.player_gsis_id")],
     },
+
+    # --- weekly_rosters alternate IDs from player_ids bridge (audit 3) ---
+    # Source NULL rates: fantasy_data 59%, yahoo 58%, pff 56%, sleeper 54%,
+    # sportradar 53%, rotowire 53%. Lookup via player_ids.gsis_id →
+    # weekly_rosters.player_gsis_id fills rows where the bridge has the
+    # cross-reference and weekly_rosters doesn't.
+    {
+        "name": "weekly_rosters_fantasy_data_id_from_player_ids",
+        "target_table": "weekly_rosters",
+        "op": "backfill_null",
+        "target_column": "fantasy_data_id",
+        "source_table": "player_ids",
+        "source_column": "fantasy_data_id",
+        "join": [("weekly_rosters.player_gsis_id", "player_ids.gsis_id")],
+    },
+    {
+        "name": "weekly_rosters_yahoo_id_from_player_ids",
+        "target_table": "weekly_rosters",
+        "op": "backfill_null",
+        "target_column": "yahoo_id",
+        "source_table": "player_ids",
+        "source_column": "yahoo_id",
+        "join": [("weekly_rosters.player_gsis_id", "player_ids.gsis_id")],
+    },
+    {
+        "name": "weekly_rosters_pff_id_from_player_ids",
+        "target_table": "weekly_rosters",
+        "op": "backfill_null",
+        "target_column": "pff_id",
+        "source_table": "player_ids",
+        "source_column": "pff_id",
+        "join": [("weekly_rosters.player_gsis_id", "player_ids.gsis_id")],
+    },
+    {
+        "name": "weekly_rosters_sleeper_id_from_player_ids",
+        "target_table": "weekly_rosters",
+        "op": "backfill_null",
+        "target_column": "sleeper_id",
+        "source_table": "player_ids",
+        "source_column": "sleeper_id",
+        "join": [("weekly_rosters.player_gsis_id", "player_ids.gsis_id")],
+    },
+    {
+        "name": "weekly_rosters_sportradar_id_from_player_ids",
+        "target_table": "weekly_rosters",
+        "op": "backfill_null",
+        "target_column": "sportradar_id",
+        "source_table": "player_ids",
+        "source_column": "sportradar_id",
+        "join": [("weekly_rosters.player_gsis_id", "player_ids.gsis_id")],
+    },
+    {
+        "name": "weekly_rosters_rotowire_id_from_player_ids",
+        "target_table": "weekly_rosters",
+        "op": "backfill_null",
+        "target_column": "rotowire_id",
+        "source_table": "player_ids",
+        "source_column": "rotowire_id",
+        "join": [("weekly_rosters.player_gsis_id", "player_ids.gsis_id")],
+    },
 ]
 
 
@@ -1250,6 +1351,9 @@ LOAD_ORDER: list = [
     "games",
     # Derived reference table built from games' stadium_id
     "stadiums",
+    # Independent reference tables (no FKs in; a few going out)
+    "teams",
+    "trades",
     # Contracts loaded first in the "player-linked" section so
     # contracts_cap_breakdown (derived from contracts.cols) can build after.
     # Actually contracts is in the player-linked block below; add the
@@ -1321,8 +1425,6 @@ SKIPPED_RELEASE_TAGS: dict[str, str] = {
     "player_stats":  "Legacy deprecated release; superseded by stats_player. All file patterns inside are duplicates of stats_player content.",
     "rosters":       "Annual historical rosters 1920-2025; pre-modern era mostly has no stat-table joins. Low LLM value vs complexity.",
     "misc":          "Junk drawer release; currently only `pfr_rosters.parquet` which is superseded by weekly_rosters.",
-    "trades":        "Trade history; no player FK; low LLM query value.",
-    "teams":         "Colors/logos display metadata.",
 }
 
 
