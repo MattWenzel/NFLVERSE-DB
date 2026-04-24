@@ -6,6 +6,14 @@ Post-build validation.
 
 The build orchestrator lives in scripts/build.py which composes these
 primitives with hub.build_hub and loaders.load_source.
+
+Note: the SQL paths in `apply_id_backfill`, `apply_fill_rule(backfill_null)`,
+and `apply_name_match_recovery` are retained for small tables (~players,
+~26K rows) and `source_expression` fills that can't be expressed as a
+simple column join. Large-table fills (>~100K rows) run through the
+pandas-first path in `build.py:_finalize_pandas` instead — see
+DESIGN_RATIONALE.md R18 for the rationale (DuckDB UPDATE with a correlated
+subquery is O(N·M); pandas merge is O(N+M)).
 """
 
 from __future__ import annotations
