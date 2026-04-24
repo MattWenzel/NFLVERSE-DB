@@ -245,6 +245,34 @@ CANARY = [
         "expected_columns": ["season", "plays", "pass_rate"],
     },
     {
+        "id": "Q18",
+        "description": "Top career passing TDs from v_player_careers (tests view + aggregation)",
+        "sql": """
+            SELECT player_display_name, career_games, career_passing_tds, career_passing_yards
+            FROM v_player_careers
+            WHERE career_passing_tds IS NOT NULL
+            ORDER BY career_passing_tds DESC
+            LIMIT 5
+        """,
+        "expected_min_rows": 5,
+        "expected_columns": ["player_display_name", "career_passing_tds"],
+        "sample_check": lambda r: r.get("player_display_name") == "Tom Brady" and r.get("career_passing_tds", 0) > 600,
+    },
+    {
+        "id": "Q19",
+        "description": "2005 Round 1 draft picks by career PPR (tests v_draft_pick_careers join)",
+        "sql": """
+            SELECT pick, team, pfr_player_name, position, career_games, career_fantasy_points_ppr
+            FROM v_draft_pick_careers
+            WHERE season = 2005 AND round = 1
+            ORDER BY career_fantasy_points_ppr DESC NULLS LAST
+            LIMIT 5
+        """,
+        "expected_min_rows": 5,
+        "expected_columns": ["pfr_player_name", "career_games"],
+        "sample_check": lambda r: r.get("pfr_player_name") == "Aaron Rodgers",
+    },
+    {
         "id": "Q15",
         "description": "FK orphan sweep across all declared FKs (integrity invariant)",
         "sql": """

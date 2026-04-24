@@ -3,6 +3,116 @@
 from __future__ import annotations
 
 
+def v_player_careers_sql() -> str:
+    """Per-player career rollup from season_stats.
+
+    Aggregates every player's regular-season totals plus a parallel set
+    of postseason totals. One row per player_gsis_id. Players without
+    stat rows (e.g. pre-stat-era picks) simply don't appear — consumer
+    joins are LEFT JOIN-friendly.
+
+    Column conventions:
+      - `career_*`      : regular-season totals
+      - `career_post_*` : postseason totals
+      - `seasons_played`: distinct REG seasons with a stat line
+      - `first_season/last_season`: REG bounds (useful for "active in X" gates)
+    """
+    return """
+        SELECT
+            player_gsis_id,
+            MAX(player_display_name)                                     AS player_display_name,
+            MAX(position)                                                AS position,
+            MAX(position_group)                                          AS position_group,
+            MIN(season) FILTER (WHERE season_type = 'REG')               AS first_season,
+            MAX(season) FILTER (WHERE season_type = 'REG')               AS last_season,
+            COUNT(DISTINCT season) FILTER (WHERE season_type = 'REG')    AS seasons_played,
+
+            SUM(games)                 FILTER (WHERE season_type='REG')  AS career_games,
+            SUM(completions)           FILTER (WHERE season_type='REG')  AS career_completions,
+            SUM(attempts)              FILTER (WHERE season_type='REG')  AS career_attempts,
+            SUM(passing_yards)         FILTER (WHERE season_type='REG')  AS career_passing_yards,
+            SUM(passing_tds)           FILTER (WHERE season_type='REG')  AS career_passing_tds,
+            SUM(passing_interceptions) FILTER (WHERE season_type='REG')  AS career_passing_ints,
+            SUM(sacks_suffered)        FILTER (WHERE season_type='REG')  AS career_sacks_suffered,
+            SUM(carries)               FILTER (WHERE season_type='REG')  AS career_rush_attempts,
+            SUM(rushing_yards)         FILTER (WHERE season_type='REG')  AS career_rushing_yards,
+            SUM(rushing_tds)           FILTER (WHERE season_type='REG')  AS career_rushing_tds,
+            SUM(receptions)            FILTER (WHERE season_type='REG')  AS career_receptions,
+            SUM(targets)               FILTER (WHERE season_type='REG')  AS career_targets,
+            SUM(receiving_yards)       FILTER (WHERE season_type='REG')  AS career_receiving_yards,
+            SUM(receiving_tds)         FILTER (WHERE season_type='REG')  AS career_receiving_tds,
+            SUM(special_teams_tds)     FILTER (WHERE season_type='REG')  AS career_st_tds,
+            SUM(def_tackles_solo)      FILTER (WHERE season_type='REG')  AS career_def_tackles_solo,
+            SUM(def_sacks)             FILTER (WHERE season_type='REG')  AS career_def_sacks,
+            SUM(def_interceptions)     FILTER (WHERE season_type='REG')  AS career_def_ints,
+            SUM(def_pass_defended)     FILTER (WHERE season_type='REG')  AS career_def_pass_def,
+            SUM(def_fumbles_forced)    FILTER (WHERE season_type='REG')  AS career_def_fumbles_forced,
+            SUM(fg_made)               FILTER (WHERE season_type='REG')  AS career_fg_made,
+            SUM(fg_att)                FILTER (WHERE season_type='REG')  AS career_fg_att,
+            SUM(fantasy_points)        FILTER (WHERE season_type='REG')  AS career_fantasy_points,
+            SUM(fantasy_points_ppr)    FILTER (WHERE season_type='REG')  AS career_fantasy_points_ppr,
+
+            SUM(games)             FILTER (WHERE season_type='POST')     AS career_post_games,
+            SUM(passing_yards)     FILTER (WHERE season_type='POST')     AS career_post_passing_yards,
+            SUM(passing_tds)       FILTER (WHERE season_type='POST')     AS career_post_passing_tds,
+            SUM(rushing_yards)     FILTER (WHERE season_type='POST')     AS career_post_rushing_yards,
+            SUM(rushing_tds)       FILTER (WHERE season_type='POST')     AS career_post_rushing_tds,
+            SUM(receiving_yards)   FILTER (WHERE season_type='POST')     AS career_post_receiving_yards,
+            SUM(receiving_tds)     FILTER (WHERE season_type='POST')     AS career_post_receiving_tds,
+            SUM(def_sacks)         FILTER (WHERE season_type='POST')     AS career_post_def_sacks,
+            SUM(def_interceptions) FILTER (WHERE season_type='POST')     AS career_post_def_ints
+        FROM season_stats
+        WHERE player_gsis_id IS NOT NULL
+        GROUP BY player_gsis_id
+    """
+
+
+def v_draft_pick_careers_sql() -> str:
+    """draft_picks + v_player_careers joined on player_gsis_id.
+
+    Consumer use case: given a draft pick (year, round, pick), see what
+    the player's career became — in our aggregated form (REG + POST
+    from season_stats) rather than PFR's own numbers baked into
+    draft_picks (which are REG-only and not consistently updated).
+
+    Left join: keeps pre-GSIS / pre-stat-era picks with career_* as NULL.
+    """
+    return """
+        SELECT
+            dp.*,
+            pc.first_season                   AS nfl_first_season,
+            pc.last_season                    AS nfl_last_season,
+            pc.seasons_played                 AS nfl_seasons,
+            pc.career_games,
+            pc.career_completions,
+            pc.career_attempts,
+            pc.career_passing_yards,
+            pc.career_passing_tds,
+            pc.career_passing_ints,
+            pc.career_rush_attempts,
+            pc.career_rushing_yards,
+            pc.career_rushing_tds,
+            pc.career_receptions,
+            pc.career_targets,
+            pc.career_receiving_yards,
+            pc.career_receiving_tds,
+            pc.career_def_tackles_solo,
+            pc.career_def_sacks,
+            pc.career_def_ints,
+            pc.career_fantasy_points,
+            pc.career_fantasy_points_ppr,
+            pc.career_post_games,
+            pc.career_post_passing_yards,
+            pc.career_post_passing_tds,
+            pc.career_post_rushing_yards,
+            pc.career_post_rushing_tds,
+            pc.career_post_receiving_yards,
+            pc.career_post_receiving_tds
+        FROM draft_picks dp
+        LEFT JOIN v_player_careers pc ON pc.player_gsis_id = dp.player_gsis_id
+    """
+
+
 def v_depth_charts_sql() -> str:
     """Composite view across the two depth-chart schemas.
 

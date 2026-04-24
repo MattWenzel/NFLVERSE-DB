@@ -399,15 +399,22 @@ def _finalize_pandas(conn, cfg, validate_after: bool, start: float) -> dict:
     print(f"\nPhases 5-7 done in {time.time()-t_phase:.1f}s")
 
     # ---- Phase 8: views ----
+    # Build order matters: v_draft_pick_careers selects from v_player_careers,
+    # so create the upstream view first.
     print("\n[Phase 8] Views")
-    try:
-        from views import v_depth_charts_sql
-        conn.execute("DROP VIEW IF EXISTS v_depth_charts")
-        conn.execute(f"CREATE VIEW v_depth_charts AS {v_depth_charts_sql()}")
-        n = conn.execute("SELECT COUNT(*) FROM v_depth_charts").fetchone()[0]
-        print(f"  v_depth_charts: {n:,} rows")
-    except Exception as e:
-        print(f"  v_depth_charts: FAILED — {e}")
+    from views import v_depth_charts_sql, v_player_careers_sql, v_draft_pick_careers_sql
+    for vname, sql_fn in [
+        ("v_depth_charts",       v_depth_charts_sql),
+        ("v_player_careers",     v_player_careers_sql),
+        ("v_draft_pick_careers", v_draft_pick_careers_sql),
+    ]:
+        try:
+            conn.execute(f'DROP VIEW IF EXISTS "{vname}"')
+            conn.execute(f'CREATE VIEW "{vname}" AS {sql_fn()}')
+            n = conn.execute(f'SELECT COUNT(*) FROM "{vname}"').fetchone()[0]
+            print(f"  {vname}: {n:,} rows")
+        except Exception as e:
+            print(f"  {vname}: FAILED — {e}")
 
     # ---- Phase 9: indexes ----
     print("\n[Phase 9] Indexes")
@@ -706,14 +713,19 @@ def build(output_path: Path, include_pbp: bool = True, validate_after: bool = Tr
 
         # ---- Phase 8 (incremental only): views ----
         print("\n[Phase 8] Views")
-        try:
-            from views import v_depth_charts_sql
-            conn.execute("DROP VIEW IF EXISTS v_depth_charts")
-            conn.execute(f"CREATE VIEW v_depth_charts AS {v_depth_charts_sql()}")
-            n = conn.execute("SELECT COUNT(*) FROM v_depth_charts").fetchone()[0]
-            print(f"  v_depth_charts: {n:,} rows")
-        except Exception as e:
-            print(f"  v_depth_charts: FAILED — {e}")
+        from views import v_depth_charts_sql, v_player_careers_sql, v_draft_pick_careers_sql
+        for vname, sql_fn in [
+            ("v_depth_charts",       v_depth_charts_sql),
+            ("v_player_careers",     v_player_careers_sql),
+            ("v_draft_pick_careers", v_draft_pick_careers_sql),
+        ]:
+            try:
+                conn.execute(f'DROP VIEW IF EXISTS "{vname}"')
+                conn.execute(f'CREATE VIEW "{vname}" AS {sql_fn()}')
+                n = conn.execute(f'SELECT COUNT(*) FROM "{vname}"').fetchone()[0]
+                print(f"  {vname}: {n:,} rows")
+            except Exception as e:
+                print(f"  {vname}: FAILED — {e}")
 
         # ---- Phase 9 (incremental only): declared indexes ----
         print("\n[Phase 9] Indexes")

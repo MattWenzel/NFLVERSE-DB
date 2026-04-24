@@ -1,6 +1,6 @@
 # nflverse Database Documentation
 
-Comprehensive NFL data built from [nflverse](https://github.com/nflverse) into a single DuckDB file. 25 tables, 78 foreign keys, covering 1999–2025.
+Comprehensive NFL data built from [nflverse](https://github.com/nflverse) into a single DuckDB file. 27 tables, 3 views, 79 foreign keys, covering 1999–2025.
 
 > **Design context:** [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md) is the authoritative list of rules + why they exist. [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md) is the field guide of upstream-data reality. [`scripts/schema.py`](../scripts/schema.py) is the authoritative declarative shape — every SOURCE, TABLE, FK, FILL_RULE.
 
@@ -8,19 +8,21 @@ Comprehensive NFL data built from [nflverse](https://github.com/nflverse) into a
 
 | Database | Size | Tables | Total Rows | Years |
 |---|---|---|---|---|
-| `nflverse.duckdb` | ~1.2 GB | 25 | ~5.5M | 1999-2025 |
-| `nflverse.sqlite` (optional) | ~3.3 GB | 25 | ~5.5M | 1999-2025 |
+| `nflverse.duckdb` | ~1.3 GB | 27 | ~6.2M | 1999-2025 |
+| `nflverse.sqlite` (optional) | ~3.3 GB | 27 | ~6.2M | 1999-2025 |
 
-Both carry the same schema, 78 foreign keys, same indexes, and `v_depth_charts` view. Build DuckDB with `python3 scripts/build.py`; mirror to SQLite with `python3 scripts/build_sqlite.py`. **SQLite consumers: run `PRAGMA foreign_keys = ON`** after connecting (SQLite's default is off).
+Both carry the same schema, 79 foreign keys, same indexes, and the 3 views (`v_depth_charts`, `v_player_careers`, `v_draft_pick_careers`). Build DuckDB with `python3 scripts/build.py`; mirror to SQLite with `python3 scripts/build_sqlite.py`. **SQLite consumers: run `PRAGMA foreign_keys = ON`** after connecting (SQLite's default is off).
 
 ### Table Row Counts
 
 | Table | Rows | Purpose |
 |-------|------|---------|
-| **players** | 26,741 | Master player registry (all positions) |
+| **players** | 26,753 | Master player registry (all positions) |
 | **player_ids** | 7,703 | Cross-platform ID bridge (ESPN/Yahoo/PFR/Sleeper/etc.) |
 | **games** | 7,276 | Schedule, scores, weather, betting, QB IDs, stadium_id |
 | **stadiums** | 62 | Reference table (derived) — latest name, roof, surface, location |
+| **teams** | 36 | Team-abbr metadata — conference/division/colors/logos/nickname |
+| **trades** | 4,847 | Player/pick trade history (1999+) |
 | **weekly_rosters** | 906,378 | Week-level roster snapshots w/ full cross-ID set (2002+) |
 | **combine** | 8,649 | NFL Scouting Combine results + draft info |
 | **draft_picks** | 12,670 | NFL Draft history + career outcomes |
@@ -45,9 +47,11 @@ Both carry the same schema, 78 foreign keys, same indexes, and `v_depth_charts` 
 
 ### Views
 
-| View | Unions | Purpose |
+| View | Source | Purpose |
 |------|--------|---------|
-| **`v_depth_charts`** | `depth_charts` + `depth_charts_2025` | Cross-schema composite — query depth charts across the 2025 schema change with a single column set (`season`, `week`, `team`, `position`, `pos_abb`, `depth_rank`, `formation`, …). See the [`v_depth_charts` section](#view-v_depth_charts-composite-across-schemas) for the column map and an example query. |
+| **`v_depth_charts`** | `depth_charts` + `depth_charts_2025` | Cross-schema composite — query depth charts across the 2025 schema change with a single column set (`season`, `week`, `team`, `position`, `pos_abb`, `depth_rank`, `formation`, …). |
+| **`v_player_careers`** | `season_stats` grouped by `player_gsis_id` | Career rollups (REG + separate POST totals): games, seasons, passing/rushing/receiving yards+TDs+ints, key defensive totals, fantasy points. One row per player. |
+| **`v_draft_pick_careers`** | `draft_picks` LEFT JOIN `v_player_careers` | Every draft pick 1936+ with the player's career totals attached. Answers "what did this pick become" in one query. NULL career fields = pre-stat-era or undrafted. |
 
 ---
 

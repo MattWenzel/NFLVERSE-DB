@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-24T04:57:53.075211+00:00",
+  "generated_at": "2026-04-24T18:29:12.260409+00:00",
   "db_path": "/home/mattw813/Documents/NFLVERSE/data/nflverse.duckdb",
   "queries": {
     "Q1": {
@@ -47,9 +47,9 @@
       ],
       "sample": [
         {
-          "display_name": "E.J. Speed",
+          "display_name": "Zaire Franklin",
           "defense_snaps": 90.0,
-          "tackles": 93
+          "tackles": 94
         },
         {
           "display_name": "Alex Anzalone",
@@ -57,9 +57,9 @@
           "tackles": 43
         },
         {
-          "display_name": "Zaire Franklin",
+          "display_name": "E.J. Speed",
           "defense_snaps": 90.0,
-          "tackles": 94
+          "tackles": 93
         }
       ],
       "status": "ok"
@@ -195,13 +195,13 @@
           "games": 106
         },
         {
-          "official_name": "Danny Short",
-          "position": "Down Judge",
+          "official_name": "Ronald Torbert",
+          "position": "Referee",
           "games": 104
         },
         {
-          "official_name": "Ronald Torbert",
-          "position": "Referee",
+          "official_name": "Danny Short",
+          "position": "Down Judge",
           "games": 104
         }
       ],
@@ -418,6 +418,76 @@
       ],
       "status": "ok"
     },
+    "Q18": {
+      "description": "Top career passing TDs from v_player_careers (tests view + aggregation)",
+      "row_count": 5,
+      "columns": [
+        "player_display_name",
+        "career_games",
+        "career_passing_tds",
+        "career_passing_yards"
+      ],
+      "sample": [
+        {
+          "player_display_name": "Tom Brady",
+          "career_games": 335.0,
+          "career_passing_tds": 649.0,
+          "career_passing_yards": 89216.0
+        },
+        {
+          "player_display_name": "Drew Brees",
+          "career_games": 287.0,
+          "career_passing_tds": 571.0,
+          "career_passing_yards": 80428.0
+        },
+        {
+          "player_display_name": "Aaron Rodgers",
+          "career_games": 264.0,
+          "career_passing_tds": 527.0,
+          "career_passing_yards": 66267.0
+        }
+      ],
+      "status": "ok"
+    },
+    "Q19": {
+      "description": "2005 Round 1 draft picks by career PPR (tests v_draft_pick_careers join)",
+      "row_count": 5,
+      "columns": [
+        "pick",
+        "team",
+        "pfr_player_name",
+        "position",
+        "career_games",
+        "career_fantasy_points_ppr"
+      ],
+      "sample": [
+        {
+          "pick": 24,
+          "team": "GNB",
+          "pfr_player_name": "Aaron Rodgers",
+          "position": "QB",
+          "career_games": 264.0,
+          "career_fantasy_points_ppr": 5056.88
+        },
+        {
+          "pick": 1,
+          "team": "SFO",
+          "pfr_player_name": "Alex Smith",
+          "position": "QB",
+          "career_games": 174.0,
+          "career_fantasy_points_ppr": 2315.54
+        },
+        {
+          "pick": 27,
+          "team": "ATL",
+          "pfr_player_name": "Roddy White",
+          "position": "WR",
+          "career_games": 166.0,
+          "career_fantasy_points_ppr": 2262.2
+        }
+      ],
+      "status": "ok"
+    },
     "Q15": {
       "description": "FK orphan sweep across all declared FKs (integrity invariant)",
       "row_count": 1,
@@ -426,7 +496,7 @@
       ],
       "sample": [
         {
-          "fk_count": 78
+          "fk_count": 79
         }
       ],
       "status": "ok"
