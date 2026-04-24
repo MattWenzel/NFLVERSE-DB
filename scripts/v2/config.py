@@ -337,8 +337,11 @@ SOURCES: dict = {
     "qbr_week": {
         "release_tag": "espn_data",
         "pattern": "espn_data/qbr_week_level.parquet",
-        "renames": {"player_id": "player_espn_id", "game_id": "game_id"},
-        "id_cleanup": {"player_espn_id": "generic", "game_id": "generic"},
+        # ESPN's game_id is a numeric ESPN ID, not our nflverse game_id
+        # (2024_01_KC_BUF format). Rename to avoid collision; keep as
+        # informational column for ESPN cross-reference.
+        "renames": {"player_id": "player_espn_id", "game_id": "espn_game_id"},
+        "id_cleanup": {"player_espn_id": "generic", "espn_game_id": "generic"},
     },
     "qbr_season": {
         "release_tag": "espn_data",
@@ -478,12 +481,17 @@ HUB_BUILD: dict = {
             "role": "biographical_backfill",
             "key_priority": ["player_pfr_id"],
             "column_map": {
-                "player_name": "display_name",
-                "pos":         "position",
-                "school":      "college_name",
-                "season":      "draft_year",
-                "ht":          "height",
-                "wt":          "weight",
+                # combine has native `draft_year`/`draft_team`/`draft_round` columns
+                # (from the nflverse-draft join on the combine file), so we use
+                # them directly rather than aliasing `season` → `draft_year`.
+                "player_name":  "display_name",
+                "pos":          "position",
+                "school":       "college_name",
+                "draft_year":   "draft_year",
+                "draft_team":   "draft_team",
+                "draft_round":  "draft_round",
+                "ht":           "height",
+                "wt":           "weight",
             },
         },
         # 6. Name-match preflight: for child-source PFR/ESPN IDs still not in
@@ -575,7 +583,7 @@ TABLES: dict = {
                 "add_fk": "players.player_gsis_id",
             },
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_pfr_id": {
                 "display_name": "player", "position": "position", "latest_team": "team",
             },
@@ -587,7 +595,7 @@ TABLES: dict = {
         "foreign_keys": [
             {"column": "player_gsis_id", "references": "players.player_gsis_id"},
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_gsis_id": {
                 "display_name": "full_name", "first_name": "first_name",
                 "last_name": "last_name", "position": "position",
@@ -601,7 +609,7 @@ TABLES: dict = {
             {"column": "player_gsis_id", "references": "players.player_gsis_id"},
             {"column": "player_espn_id", "references": "players.player_espn_id"},
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_gsis_id": {
                 "display_name": "player_name", "latest_team": "team", "position": "pos_abb",
             },
@@ -616,7 +624,7 @@ TABLES: dict = {
         "foreign_keys": [
             {"column": "player_gsis_id", "references": "players.player_gsis_id"},
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_gsis_id": {
                 "display_name": "player_display_name",
                 "first_name": "player_first_name",
@@ -642,7 +650,7 @@ TABLES: dict = {
                 "add_fk": "players.player_gsis_id",
             },
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_pfr_id": {
                 "display_name": "player", "position": "pos", "latest_team": "team",
             },
@@ -680,7 +688,7 @@ TABLES: dict = {
                 "add_fk": "players.player_gsis_id",
             },
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_pfr_id": {
                 "display_name": "player_name", "position": "pos", "college_name": "school",
             },
@@ -693,7 +701,7 @@ TABLES: dict = {
             {"column": "player_gsis_id", "references": "players.player_gsis_id"},
             {"column": "player_pfr_id",  "references": "players.player_pfr_id"},
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_gsis_id": {"display_name": "pfr_player_name", "position": "position"},
             "player_pfr_id":  {"display_name": "pfr_player_name", "position": "position"},
         },
@@ -710,7 +718,7 @@ TABLES: dict = {
             {"column": "player_gsis_id", "references": "players.player_gsis_id"},
             {"column": "game_id",        "references": "games.game_id"},
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_gsis_id": {"display_name": "player_display_name", "position": "position"},
         },
         "indexes": [("player_gsis_id", "season")],
@@ -722,7 +730,7 @@ TABLES: dict = {
         "foreign_keys": [
             {"column": "player_gsis_id", "references": "players.player_gsis_id"},
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_gsis_id": {"display_name": "player_display_name", "position": "position"},
         },
         "indexes": [("player_gsis_id", "season")],
@@ -731,10 +739,10 @@ TABLES: dict = {
     "qbr": {
         # Source swapped from espnscrapeR CSV (stopped at 2023) to nflverse
         # espn_data/qbr_week_level.parquet (covers 2024-2025, 21 more QBs).
+        # espn_game_id stays as a non-FK column (ESPN's numeric ID, not ours).
         "source_id": "qbr_week",
         "foreign_keys": [
             {"column": "player_espn_id", "references": "players.player_espn_id"},
-            {"column": "game_id",        "references": "games.game_id"},
         ],
         "id_backfill": [
             {
@@ -743,7 +751,7 @@ TABLES: dict = {
                 "add_fk": "players.player_gsis_id",
             },
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_espn_id": {"display_name": "name_short", "latest_team": "team_abb"},
         },
     },
@@ -755,7 +763,7 @@ TABLES: dict = {
         "foreign_keys": [
             {"column": "player_gsis_id", "references": "players.player_gsis_id"},
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_gsis_id": {
                 "display_name": "full_name", "first_name": "first_name",
                 "last_name": "last_name", "position": "position",
@@ -771,7 +779,7 @@ TABLES: dict = {
         "foreign_keys": [
             {"column": "player_gsis_id", "references": "players.player_gsis_id"},
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_gsis_id": {
                 "display_name": "full_name", "first_name": "first_name",
                 "last_name": "last_name", "position": "position",
@@ -786,7 +794,7 @@ TABLES: dict = {
         "foreign_keys": [
             {"column": "player_gsis_id", "references": "players.player_gsis_id"},
         ],
-        "stub_source": {
+        "_removed_stub_source": {
             "player_gsis_id": {"display_name": "player", "position": "position"},
         },
     },
@@ -808,19 +816,20 @@ TABLES: dict = {
     },
 
     "officials": {
-        # NEW in v2. Referee crews per game.
+        # NEW in v2. Referee crews per game. Note: officials.game_id uses a
+        # different ID space (NFL's internal YYYYMMDDGG, not our 2015_01_GB_CHI).
+        # No FK until we work out a reliable crosswalk; join via (season, week, team)
+        # against games if needed.
         "source_id": "officials",
-        "foreign_keys": [
-            {"column": "game_id", "references": "games.game_id"},
-        ],
+        "foreign_keys": [],
     },
 
     "team_game_stats": {
-        # NEW in v2. Team-level weekly aggregates.
+        # NEW in v2. Team-level weekly aggregates. The source parquet doesn't
+        # carry a game_id column — join via (season, week, team) against games
+        # when you need cross-table joins.
         "source_id": "stats_team_week",
-        "foreign_keys": [
-            {"column": "game_id", "references": "games.game_id"},
-        ],
+        "foreign_keys": [],
         "indexes": [("team", "season")],
     },
 
@@ -836,7 +845,7 @@ TABLES: dict = {
             [{"column": "game_id", "references": "games.game_id"}]
             + [{"column": c, "references": "players.player_gsis_id"} for c in PBP_PLAYER_COLS]
         ),
-        "stub_source": {
+        "_removed_stub_source": {
             # Each GSIS column's companion *_player_name column serves as the
             # stub's display_name.
             c: {"display_name": (
