@@ -264,6 +264,23 @@ astype('string')` for any numeric column before sentinel stripping. Or declare
 
 ---
 
+### 2.8 DuckDB UPDATE with correlated subquery is O(N·M); use pandas merge
+
+`UPDATE target SET col = (SELECT ... FROM source WHERE correlated) WHERE col IS NULL`
+re-scans `source` once per target row. On weekly_rosters (906K rows × 8 fill
+rules), measured runtime was 10+ minutes. The pandas equivalent — read target
+and source once, merge on the join key, fillna the target column, DROP +
+write_table bulk — ran in 47 seconds. Same result, 15× speedup.
+
+**v3 rule:** For any table over ~100K rows, backfill and fill_rule joins
+happen in pandas (read → merge → drop → bulk write). SQL UPDATE is reserved
+for small tables (`players`, ~26K rows) and for `source_expression` rules
+that can't be expressed as a simple column join. See DESIGN_RATIONALE.md R18.
+
+**Reference implementation:** `scripts/build.py:_finalize_pandas`.
+
+---
+
 ## 3. Pipeline architecture (what works, what doesn't)
 
 ### 3.1 Declarative config beats distributed fetch functions

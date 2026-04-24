@@ -78,13 +78,13 @@ Eleven phases, each producing an artifact the next phase validates against:
 | 3. Hub construction | `players` DataFrame via priority-merge (pandas) |
 | 4. Preflight stubs | Unresolved child FK targets added to hub before any child writes |
 | 5. Table writes | Child tables loaded in FK-dependency order |
-| 6. ID backfill | `player_gsis_id` populated on PFR/ESPN-native tables |
-| 7. Name-match recovery | Pre-GSIS HoF draft picks resolved by `(name, position, season-active)` |
-| 8. Fill rules | Cross-table value backfills (game_stats.game_id, weekly_rosters PFR/ESPN, etc.) |
+| 6. ID backfill | `player_gsis_id` populated on PFR/ESPN-native tables (pandas merge, bulk-replace) |
+| 7. Name-match recovery | Pre-GSIS HoF draft picks resolved by `(name, position, season-active)` (pandas) |
+| 8. Fill rules | Cross-table value backfills (pandas for >100K-row tables, SQL UPDATE for `players`) |
 | 9. Views + indexes | `v_depth_charts`; hash indexes on frequent joins |
 | 10. Validation | `data/canary_proof.json` — 17 committed LLM queries; plus FK orphan sweep, 0-tolerance integrity gates |
 
-See [`docs/DESIGN_RATIONALE.md`](docs/DESIGN_RATIONALE.md) for the 17 rules that each phase exists to enforce, and [`docs/LESSONS_LEARNED.md`](docs/LESSONS_LEARNED.md) for the upstream-data reality that motivated the design.
+See [`docs/DESIGN_RATIONALE.md`](docs/DESIGN_RATIONALE.md) for the 18 rules that each phase exists to enforce, and [`docs/LESSONS_LEARNED.md`](docs/LESSONS_LEARNED.md) for the upstream-data reality that motivated the design. Phases 6-8 join in pandas and bulk-replace tables — `UPDATE ... SET ... (SELECT ... correlated)` on a 906K-row table measured 10+ minutes; the pandas path runs in under a minute (R18).
 
 ## CLI
 
@@ -103,6 +103,8 @@ python3 scripts/download.py --dry-run --all                 # preview
 python3 scripts/build.py                   # full build (all tables, incl PBP)
 python3 scripts/build.py --no-pbp          # skip play_by_play
 python3 scripts/build.py --years 2025      # incremental rebuild of year-partitioned tables
+python3 scripts/build.py --tables qbr      # fast iteration: rewrite ONE table (seconds)
+python3 scripts/build.py --finalize        # rerun phases 5-9 on existing DB (pandas-first fills)
 python3 scripts/build.py --no-validate     # skip post-build canary/invariant checks
 
 # Survey (runs inside build; also callable standalone)

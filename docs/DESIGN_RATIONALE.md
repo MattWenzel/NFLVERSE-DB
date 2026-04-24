@@ -356,6 +356,51 @@ git log.
 
 ---
 
+## R18. Pandas-first, DuckDB-second for large-table backfills
+
+**Rule:** Any fill that touches more than ~100K rows and joins to another
+table — id_backfill, fill_rules with `source_table` joins, name-match
+recovery — must do the join in pandas, then bulk-replace the table (DROP
++ write_table via pandas registration). No SQL UPDATE with correlated
+subqueries on large child tables.
+
+**Why:** DuckDB's UPDATE with a correlated subquery is O(N·M) in practice:
+for each of N target rows it re-scans the source. On weekly_rosters (906K
+rows × 8 alt-ID fills) the pure-SQL path was measured at 10+ minutes;
+the pandas version (read → merge → drop → write_table) ran in 47 seconds.
+Same result, 15× faster.
+
+**Scope:** Applies to `apply_id_backfill`, `apply_fill_rule(backfill_null)`
+with `source_table` joins, and `apply_name_match_recovery`. Does NOT apply
+to `aggregate_from_sibling` (INSERT ... GROUP BY is DuckDB-native and
+fast) or view/index creation.
+
+**How it's implemented:** `scripts/build.py:_finalize_pandas` is the
+reference implementation. The `--finalize` path uses it unconditionally;
+full build Phase 5-7 calls into the same helper (post-Phase-4 table load)
+so both paths get the same speedup.
+
+**Tempting alternative (don't do it):** "Keep it all SQL for consistency."
+The correlated-subquery cost scales with table size; the pandas version
+scales with memory. We have memory. Use it.
+
+**Exception — small tables (`players`, ~26K rows):** UPDATE is cheap
+there, and `players` can't be dropped anyway (R3 FK-parent restriction).
+Apply fills via SQL UPDATE. The pandas-first rule kicks in above roughly
+100K rows or when the UPDATE has multiple correlated joins.
+
+**Code:** `scripts/build.py:_finalize_pandas`. Invoked by both `--finalize`
+and the full-build's post-Phase-4 fill application. `scripts/engine.py:
+apply_fill_rule` retains its SQL path for `players` fills and
+`source_expression` rules that can't be expressed in pandas.
+
+**Origin:** v3 build attempted a full rebuild via `--tables` batches.
+Each batch ran fast, but the weekly_rosters alt-ID fills (8 separate
+UPDATEs on 906K rows) dominated runtime. Switching to pandas merges cut
+finalize from a projected 10+ minutes to 1:32.
+
+---
+
 ## How to add a new rule
 
 1. Identify the concrete incident the rule addresses (past failure, observed
