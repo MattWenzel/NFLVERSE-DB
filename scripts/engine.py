@@ -82,15 +82,85 @@ def write_table(conn: duckdb.DuckDBPyConnection, table_name: str,
         conn.unregister("_ingest_df")
 
 
-def load_multi_source(source_ids: list[str], sources_config: dict) -> pd.DataFrame:
+def write_partition(conn: duckdb.DuckDBPyConnection, table_name: str,
+                    df: pd.DataFrame, year_col: str, years: list[int]) -> int:
+    """Delete + re-insert rows for specific years. Used in incremental mode.
+
+    Requirements:
+      - table already exists (incremental assumes full build previously ran)
+      - FK target rows already exist (caller has synced hub + inserted-new-only)
+      - df is already filtered to the requested years
+
+    Returns total row count after the operation.
+    """
+    if not years:
+        return conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
+
+    conn.register("_partition_df", df)
+    try:
+        placeholders = ", ".join("?" for _ in years)
+        conn.execute(
+            f'DELETE FROM "{table_name}" WHERE "{year_col}" IN ({placeholders})',
+            list(years),
+        )
+        cols = {r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='main' AND table_name=?", [table_name]
+        ).fetchall()}
+        keep = [c for c in df.columns if c in cols]
+        col_list = ", ".join(f'"{c}"' for c in keep)
+        conn.execute(
+            f'INSERT INTO "{table_name}" ({col_list}) '
+            f'SELECT {col_list} FROM _partition_df'
+        )
+        return conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
+    finally:
+        conn.unregister("_partition_df")
+
+
+def insert_new_hub_rows(conn: duckdb.DuckDBPyConnection, hub_df: pd.DataFrame,
+                        primary_key: str = "player_gsis_id") -> int:
+    """Insert only rows from hub_df whose primary_key value isn't already in
+    the players table. Sidesteps DuckDB's UPDATE-on-FK-parent restriction:
+    existing rows are untouched (can't be modified; would break children);
+    new rows are added (no FK issue — no child refers to them yet).
+
+    Returns count of new rows inserted.
+    """
+    conn.register("_hub_df", hub_df)
+    try:
+        before = conn.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+        cols = {r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='main' AND table_name='players'"
+        ).fetchall()}
+        keep = [c for c in hub_df.columns if c in cols]
+        col_list = ", ".join(f'"{c}"' for c in keep)
+        conn.execute(f"""
+            INSERT INTO players ({col_list})
+            SELECT {col_list} FROM _hub_df
+            WHERE "{primary_key}" IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM players p WHERE p."{primary_key}" = _hub_df."{primary_key}"
+              )
+        """)
+        after = conn.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+        return after - before
+    finally:
+        conn.unregister("_hub_df")
+
+
+def load_multi_source(source_ids: list[str], sources_config: dict,
+                      years: list[int] | None = None) -> pd.DataFrame:
     """Load multiple source_ids and concat with union_by_name semantics.
 
     Used by TABLES entries that declare source_ids (a list) — e.g. ngs_stats
-    which unions passing/rushing/receiving.
+    which unions passing/rushing/receiving. `years` filter is passed through
+    for year-partitioned sub-sources.
     """
     dfs = []
     for sid in source_ids:
-        df = load_source(sid, sources_config[sid])
+        df = load_source(sid, sources_config[sid], years=years)
         if not df.empty:
             dfs.append(df)
     if not dfs:
@@ -98,18 +168,20 @@ def load_multi_source(source_ids: list[str], sources_config: dict) -> pd.DataFra
     return pd.concat(dfs, ignore_index=True, sort=False)
 
 
-def table_source_df(table_name: str, table_spec: dict, sources_config: dict) -> pd.DataFrame:
+def table_source_df(table_name: str, table_spec: dict, sources_config: dict,
+                    years: list[int] | None = None) -> pd.DataFrame:
     """Resolve the DataFrame for one table per its config.
 
     Handles: single source_id, multiple source_ids (UNION), and dedup_cols /
-    dropna_cols declared on the table.
+    dropna_cols declared on the table. When `years` is provided, load_source
+    filters year-partitioned raw files to only those years.
     """
     src_id = table_spec.get("source_id")
     src_ids = table_spec.get("source_ids", [])
     if src_id:
-        df = load_source(src_id, sources_config[src_id])
+        df = load_source(src_id, sources_config[src_id], years=years)
     elif src_ids:
-        df = load_multi_source(src_ids, sources_config)
+        df = load_multi_source(src_ids, sources_config, years=years)
     else:
         return pd.DataFrame()
 

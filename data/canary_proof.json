@@ -1,0 +1,395 @@
+{
+  "generated_at": "2026-04-24T03:06:23.322065+00:00",
+  "db_path": "/home/mattw813/Documents/NFLVERSE/data/nflverse.duckdb",
+  "queries": {
+    "Q1": {
+      "description": "2023 POST top rushers (tests season_stats POST coverage)",
+      "row_count": 10,
+      "columns": [
+        "display_name",
+        "recent_team",
+        "rushing_yards",
+        "rushing_tds",
+        "games"
+      ],
+      "sample": [
+        {
+          "display_name": "Isiah Pacheco",
+          "recent_team": "KC",
+          "rushing_yards": 313,
+          "rushing_tds": 3,
+          "games": 4
+        },
+        {
+          "display_name": "Christian McCaffrey",
+          "recent_team": "SF",
+          "rushing_yards": 268,
+          "rushing_tds": 4,
+          "games": 3
+        },
+        {
+          "display_name": "Aaron Jones",
+          "recent_team": "GB",
+          "rushing_yards": 226,
+          "rushing_tds": 3,
+          "games": 2
+        }
+      ],
+      "status": "ok"
+    },
+    "Q2": {
+      "description": "2024 LBs by defensive snaps with tackles (tests snap_counts \u2194 season_stats)",
+      "row_count": 10,
+      "columns": [
+        "display_name",
+        "defense_snaps",
+        "tackles"
+      ],
+      "sample": [
+        {
+          "display_name": "E.J. Speed",
+          "defense_snaps": 90.0,
+          "tackles": 93
+        },
+        {
+          "display_name": "Alex Anzalone",
+          "defense_snaps": 90.0,
+          "tackles": 43
+        },
+        {
+          "display_name": "Zaire Franklin",
+          "defense_snaps": 90.0,
+          "tackles": 94
+        }
+      ],
+      "status": "ok"
+    },
+    "Q3": {
+      "description": "GSIS-native join on snap_counts (tests id_backfill completeness)",
+      "row_count": 5,
+      "columns": [
+        "display_name",
+        "defense_snaps"
+      ],
+      "sample": [
+        {
+          "display_name": "E.J. Speed",
+          "defense_snaps": 90.0
+        },
+        {
+          "display_name": "Alex Anzalone",
+          "defense_snaps": 90.0
+        },
+        {
+          "display_name": "Zaire Franklin",
+          "defense_snaps": 90.0
+        }
+      ],
+      "status": "ok"
+    },
+    "Q4": {
+      "description": "Patrick Mahomes career passing (tests time-series continuity)",
+      "row_count": 16,
+      "columns": [
+        "season",
+        "season_type",
+        "passing_yards",
+        "passing_tds",
+        "passing_interceptions",
+        "games"
+      ],
+      "sample": [
+        {
+          "season": 2017,
+          "season_type": "REG",
+          "passing_yards": 284,
+          "passing_tds": 0,
+          "passing_interceptions": 1,
+          "games": 1
+        },
+        {
+          "season": 2018,
+          "season_type": "POST",
+          "passing_yards": 573,
+          "passing_tds": 3,
+          "passing_interceptions": 0,
+          "games": 2
+        },
+        {
+          "season": 2018,
+          "season_type": "REG",
+          "passing_yards": 5097,
+          "passing_tds": 50,
+          "passing_interceptions": 12,
+          "games": 16
+        }
+      ],
+      "status": "ok"
+    },
+    "Q5": {
+      "description": "Highest-paid active QBs (tests contracts table)",
+      "row_count": 5,
+      "columns": [
+        "display_name",
+        "team",
+        "apy",
+        "years"
+      ],
+      "sample": [
+        {
+          "display_name": "Dak Prescott",
+          "team": "Cowboys",
+          "apy": 60.0,
+          "years": 4.0
+        },
+        {
+          "display_name": "Jordan Love",
+          "team": "Packers",
+          "apy": 55.0,
+          "years": 4.0
+        },
+        {
+          "display_name": "Trevor Lawrence",
+          "team": "Jaguars",
+          "apy": 55.0,
+          "years": 5.0
+        }
+      ],
+      "status": "ok"
+    },
+    "Q6": {
+      "description": "Most-injured players 2024 (tests injuries table)",
+      "row_count": 5,
+      "columns": [
+        "display_name",
+        "weeks_on_report"
+      ],
+      "sample": [
+        {
+          "display_name": "Kyle Dugger",
+          "weeks_on_report": 13
+        },
+        {
+          "display_name": "Jaire Alexander",
+          "weeks_on_report": 12
+        },
+        {
+          "display_name": "Vederian Lowe",
+          "weeks_on_report": 12
+        }
+      ],
+      "status": "ok"
+    },
+    "Q7": {
+      "description": "Top officiating crews by games since 2020 (tests officials table)",
+      "row_count": 5,
+      "columns": [
+        "official_name",
+        "position",
+        "games"
+      ],
+      "sample": [
+        {
+          "official_name": "Rusty Baynes",
+          "position": "Line Judge",
+          "games": 106
+        },
+        {
+          "official_name": "Danny Short",
+          "position": "Down Judge",
+          "games": 104
+        },
+        {
+          "official_name": "Ronald Torbert",
+          "position": "Referee",
+          "games": 104
+        }
+      ],
+      "status": "ok"
+    },
+    "Q8": {
+      "description": "Josh Allen weekly passing 2023 (tests pfr_advanced_weekly + game_stats)",
+      "row_count": 17,
+      "columns": [
+        "week",
+        "passing_yards",
+        "passing_tds",
+        "passing_interceptions"
+      ],
+      "sample": [
+        {
+          "week": 1,
+          "passing_yards": 236,
+          "passing_tds": 1,
+          "passing_interceptions": 3
+        },
+        {
+          "week": 2,
+          "passing_yards": 274,
+          "passing_tds": 3,
+          "passing_interceptions": 0
+        },
+        {
+          "week": 3,
+          "passing_yards": 218,
+          "passing_tds": 1,
+          "passing_interceptions": 1
+        }
+      ],
+      "status": "ok"
+    },
+    "Q9": {
+      "description": "v_depth_charts cross-schema composite (tests view coverage)",
+      "row_count": 1,
+      "columns": [
+        "season",
+        "team",
+        "players_charted"
+      ],
+      "sample": [
+        {
+          "season": 2024,
+          "team": "KC",
+          "players_charted": 2
+        }
+      ],
+      "status": "ok"
+    },
+    "Q10": {
+      "description": "Pre-1995 HoF draft picks have GSIS (tests name-match recovery)",
+      "row_count": 5,
+      "columns": [
+        "season",
+        "pfr_player_name",
+        "player_gsis_id"
+      ],
+      "sample": [
+        {
+          "season": 1983,
+          "pfr_player_name": "John Elway",
+          "player_gsis_id": "00-0004884"
+        },
+        {
+          "season": 1983,
+          "pfr_player_name": "Eric Dickerson",
+          "player_gsis_id": "00-0004266"
+        },
+        {
+          "season": 1983,
+          "pfr_player_name": "Curt Warner",
+          "player_gsis_id": "WAR480854"
+        }
+      ],
+      "status": "ok"
+    },
+    "Q11": {
+      "description": "Top weekly_rosters player appearances (tests weekly_rosters table)",
+      "row_count": 5,
+      "columns": [
+        "display_name",
+        "weeks"
+      ],
+      "sample": [
+        {
+          "display_name": "Byron Young",
+          "weeks": 40
+        },
+        {
+          "display_name": "Mike Edwards",
+          "weeks": 39
+        },
+        {
+          "display_name": "Tyler Davis",
+          "weeks": 37
+        }
+      ],
+      "status": "ok"
+    },
+    "Q12": {
+      "description": "Defensive advanced stats coverage (tests pfr_advanced_season_def load)",
+      "row_count": 4,
+      "columns": [
+        "stat_type",
+        "rows"
+      ],
+      "sample": [
+        {
+          "stat_type": "def",
+          "rows": 7537
+        },
+        {
+          "stat_type": "pass",
+          "rows": 848
+        },
+        {
+          "stat_type": "rec",
+          "rows": 4130
+        }
+      ],
+      "status": "ok"
+    },
+    "Q13": {
+      "description": "QBR canonical GSIS join (tests qbr id_backfill)",
+      "row_count": 5,
+      "columns": [
+        "display_name",
+        "avg_qbr",
+        "games"
+      ],
+      "sample": [
+        {
+          "display_name": "Brock Purdy",
+          "avg_qbr": 71.13125,
+          "games": 16
+        },
+        {
+          "display_name": "Dak Prescott",
+          "avg_qbr": 69.71176470588235,
+          "games": 17
+        },
+        {
+          "display_name": "Josh Allen",
+          "avg_qbr": 66.73529411764704,
+          "games": 17
+        }
+      ],
+      "status": "ok"
+    },
+    "Q14": {
+      "description": "FTN charting play-count (tests ftn_charting table)",
+      "row_count": 4,
+      "columns": [
+        "season",
+        "plays_charted"
+      ],
+      "sample": [
+        {
+          "season": 2022,
+          "plays_charted": 41643
+        },
+        {
+          "season": 2023,
+          "plays_charted": 48225
+        },
+        {
+          "season": 2024,
+          "plays_charted": 48031
+        }
+      ],
+      "status": "ok"
+    },
+    "Q15": {
+      "description": "FK orphan sweep across all declared FKs (integrity invariant)",
+      "row_count": 1,
+      "columns": [
+        "fk_count"
+      ],
+      "sample": [
+        {
+          "fk_count": 72
+        }
+      ],
+      "status": "ok"
+    }
+  }
+}

@@ -130,6 +130,15 @@ SOURCES: dict = {
         "year_range": ("auto", "auto"),
         "renames": {"pfr_player_id": "player_pfr_id"},
         "id_cleanup": {"player_pfr_id": "generic"},
+        # PFR is the native ID on snap_counts. After id_backfill fills
+        # player_gsis_id via hub lookup, both columns reach ~100% coverage
+        # because weekly_rosters covers every player snap_counts tracks.
+        # The 15% "NULL stats" pattern observed by v1's LLM consumer was
+        # NOT a bug — filter `defense_snaps > 0` or `offense_snaps > 0` to
+        # exclude zero-snap depth chart entries that didn't record stats.
+        "expected_gaps": {
+            "null_rate.player_pfr_id.max": 0.02,
+        },
     },
 
     # -------- nflverse_releases: depth_charts --------
@@ -245,6 +254,11 @@ SOURCES: dict = {
         "pattern": "combine/combine.parquet",
         "renames": {"pfr_id": "player_pfr_id"},
         "id_cleanup": {"player_pfr_id": "generic"},
+        # ~20% of combine rows have no PFR ID — these are combine-only
+        # prospects who never reached a PFR roster page. Not a bug; data reality.
+        "expected_gaps": {
+            "null_rate.player_pfr_id.max": 0.22,
+        },
     },
 
     # -------- nflverse_releases: draft_picks --------
@@ -253,6 +267,14 @@ SOURCES: dict = {
         "pattern": "draft_picks/draft_picks.parquet",
         "renames": {"gsis_id": "player_gsis_id", "pfr_player_id": "player_pfr_id"},
         "id_cleanup": {"player_gsis_id": "gsis", "player_pfr_id": "generic"},
+        # Source has 75% NULL GSIS (pre-1995 picks predate the GSIS era).
+        # Phase 6 name-match recovery fills ~60pp of those, leaving ~15-20% NULL.
+        # The survey measures the source (pre-recovery) rate; post-build the
+        # table rate is ~20%.
+        "expected_gaps": {
+            "null_rate.player_gsis_id.max": 0.80,    # source feed: ≤80% NULL
+            "null_rate.player_pfr_id.max": 0.16,     # PFR coverage ~86%
+        },
     },
 
     # -------- nflverse_releases: pbp --------
@@ -289,6 +311,14 @@ SOURCES: dict = {
             "esb_id": "generic",
             "pff_id": "generic",
             "smart_id": "generic",
+        },
+        # GSIS coverage is near-100% (this is nflverse's canonical weekly feed).
+        # PFR/ESPN NULL rates are high because upstream sources the bridge to
+        # PFR/ESPN inconsistently. Not a bug.
+        "expected_gaps": {
+            "null_rate.player_gsis_id.max": 0.01,
+            "null_rate.player_pfr_id.max": 0.70,
+            "null_rate.player_espn_id.max": 0.60,
         },
     },
 
@@ -1026,6 +1056,101 @@ LOAD_ORDER: list = [
 # Validation (self-check on config load)
 # ===========================================================================
 
+# ===========================================================================
+# Explicitly-skipped manifest patterns
+# ===========================================================================
+# Every entry in scripts/schema_skeleton.py:SKELETON must be either present
+# in SOURCES (matched by `release_tag` + `pattern` filename), OR listed here
+# with a reason. This makes "we saw this upstream and chose not to use it"
+# an explicit, auditable decision rather than silent omission.
+#
+# The auditor in validate_config() fails the build if a skeleton entry is in
+# NEITHER SOURCES nor this list, which is what guarantees we can't miss
+# future upstream additions.
+
+SKIPPED_SOURCES: dict[str, str] = {
+    # Specific skeleton IDs we explicitly decline to consume.
+    "stats_player_regpost":          "Union of reg+post; redundant with both loaded",
+    "stats_team_regpost":            "Union of reg+post; redundant with both loaded",
+    "roster":                        "Annual rosters 1920-; pre-modern era, no stat-table joins",
+    "teams_colors_logos":            "Display-only metadata; low LLM-query value",
+    "trades":                        "Trade history; low LLM-query value (no player FK)",
+    "pfr_rosters":                   "In 'misc' release; superseded by weekly_rosters",
+    "pbp_participation_old":         "Pre-2023 legacy format; superseded by pbp_participation",
+    "qbr_season_level":              "We load qbr_week_level and aggregate as needed",
+    "otc_players":                   "Players component file; superseded by main players.parquet",
+    "players_components__players":   "Components release; superseded by main players release",
+    "players":                       "Duplicate of players_master via players_components release",
+    "dynastyprocess_db_playerids":   "Covered by SOURCES['db_playerids']",
+}
+
+# Whole-release skips — every skeleton entry under these release_tags is
+# considered explicitly skipped. Reason declared once per release.
+SKIPPED_RELEASE_TAGS: dict[str, str] = {
+    "player_stats":  "Legacy deprecated release; superseded by stats_player. All file patterns inside are duplicates of stats_player content.",
+    "rosters":       "Annual historical rosters 1920-2025; pre-modern era mostly has no stat-table joins. Low LLM value vs complexity.",
+    "misc":          "Junk drawer release; currently only `pfr_rosters.parquet` which is superseded by weekly_rosters.",
+    "trades":        "Trade history; no player FK; low LLM query value.",
+    "teams":         "Colors/logos display metadata.",
+}
+
+
+def _source_file_stem(source_spec: dict) -> str:
+    """Return the bare filename stem of a source's pattern (for audit match).
+    E.g. 'players/players.parquet' -> 'players'; 'stats_player/stats_player_week_{year}.parquet' -> 'stats_player_week'."""
+    pat = source_spec.get("pattern", "")
+    fname = pat.rsplit("/", 1)[-1]
+    fname = fname.replace(".parquet", "").replace(".csv", "").replace("_{year}", "")
+    return fname
+
+
+def audit_against_skeleton() -> list[str]:
+    """Cross-check SOURCES + SKIPPED_SOURCES against the committed skeleton.
+
+    Returns errors if a skeleton entry is in neither SOURCES nor SKIPPED_SOURCES.
+    This is the v3 gate that prevents missing upstream additions.
+    """
+    import importlib.util
+    from pathlib import Path as _Path
+    skel_path = _Path(__file__).resolve().parent / "schema_skeleton.py"
+    if not skel_path.exists():
+        return [f"schema_skeleton.py missing at {skel_path}. Run scripts/schema_generator.py."]
+    spec = importlib.util.spec_from_file_location("schema_skeleton", skel_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    skeleton = mod.SKELETON
+
+    # Match by (release_tag, bare filename stem) tuple
+    sources_by_stem: dict[tuple[str, str], str] = {}
+    for sid, spec_ in SOURCES.items():
+        stem = _source_file_stem(spec_)
+        tag = spec_.get("release_tag", "_external")
+        sources_by_stem[(tag, stem)] = sid
+
+    errors: list[str] = []
+    for skel_id, skel_entry in skeleton.items():
+        if skel_id in SKIPPED_SOURCES:
+            continue
+        if skel_entry.get("release_tag") in SKIPPED_RELEASE_TAGS:
+            continue
+        # Match via (release_tag, stem)
+        skel_tag = skel_entry.get("release_tag", "_external")
+        skel_stem = _source_file_stem(skel_entry)
+        if (skel_tag, skel_stem) in sources_by_stem:
+            continue
+        # Also accept if any SOURCES entry has the same pattern (looser match)
+        if any(s.get("pattern", "").endswith(skel_entry.get("pattern", "__never__")) or
+               skel_entry.get("pattern", "").endswith(s.get("pattern", "__never__"))
+               for s in SOURCES.values()):
+            continue
+        errors.append(
+            f"skeleton entry {skel_id!r} (pattern {skel_entry.get('pattern')!r} "
+            f"tag {skel_tag!r}) is in neither SOURCES nor SKIPPED_SOURCES. "
+            f"Add an override entry in SOURCES or a reason to SKIPPED_SOURCES."
+        )
+    return errors
+
+
 def validate_config(manifest: dict | None = None) -> list[str]:
     """Cross-check the config. Returns a list of error strings (empty = OK).
 
@@ -1129,5 +1254,15 @@ if __name__ == "__main__":
         for e in errs:
             print(f"  {e}")
         raise SystemExit(1)
+
+    skel_errs = audit_against_skeleton()
+    if skel_errs:
+        print("\nSkeleton audit FAILED (upstream drift not accounted for):")
+        for e in skel_errs:
+            print(f"  {e}")
+        raise SystemExit(1)
+
     print(f"Config OK: {len(SOURCES)} sources, {len(TABLES)} tables, "
           f"{len(FILL_RULES)} fill rules, {len(VIEWS)} views.")
+    print(f"Skeleton audit OK: all candidates either in SOURCES or SKIPPED_SOURCES "
+          f"({len(SKIPPED_SOURCES)} explicit skips).")

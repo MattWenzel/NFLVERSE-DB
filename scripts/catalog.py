@@ -335,13 +335,84 @@ def save_manifest(manifest: dict, path: Path = MANIFEST_PATH, merge: bool = Fals
     print(f"  wrote {path.relative_to(ROOT)} ({size_kb:.1f} KB)")
 
 
+def _structural_diff(old: dict, new: dict) -> list[str]:
+    """Compare two manifests by (release, pattern, column-set) structure.
+    Ignores `generated_at` and sample_row_count (those change every run)."""
+    diffs: list[str] = []
+    old_releases = old.get("nflverse_releases", {})
+    new_releases = new.get("nflverse_releases", {})
+
+    added_tags = set(new_releases) - set(old_releases)
+    removed_tags = set(old_releases) - set(new_releases)
+    for t in sorted(added_tags):
+        diffs.append(f"NEW RELEASE: {t}")
+    for t in sorted(removed_tags):
+        diffs.append(f"REMOVED RELEASE: {t}")
+
+    for tag in sorted(set(old_releases) & set(new_releases)):
+        old_pats = {p["pattern"]: p for p in old_releases[tag].get("patterns", [])}
+        new_pats = {p["pattern"]: p for p in new_releases[tag].get("patterns", [])}
+        for pat in sorted(set(new_pats) - set(old_pats)):
+            diffs.append(f"NEW FILE PATTERN: {tag}/{pat}")
+        for pat in sorted(set(old_pats) - set(new_pats)):
+            diffs.append(f"REMOVED FILE PATTERN: {tag}/{pat}")
+        for pat in sorted(set(old_pats) & set(new_pats)):
+            old_cols = {c["name"] for c in old_pats[pat].get("columns", [])}
+            new_cols = {c["name"] for c in new_pats[pat].get("columns", [])}
+            added_cols = new_cols - old_cols
+            removed_cols = old_cols - new_cols
+            for c in sorted(added_cols):
+                diffs.append(f"NEW COLUMN: {tag}/{pat}.{c}")
+            for c in sorted(removed_cols):
+                diffs.append(f"REMOVED COLUMN: {tag}/{pat}.{c}")
+            old_years = set(old_pats[pat].get("years") or [])
+            new_years = set(new_pats[pat].get("years") or [])
+            added_years = new_years - old_years
+            removed_years = old_years - new_years
+            if added_years:
+                diffs.append(
+                    f"NEW YEARS: {tag}/{pat} +{sorted(added_years)}"
+                )
+            if removed_years:
+                diffs.append(
+                    f"REMOVED YEARS: {tag}/{pat} -{sorted(removed_years)}"
+                )
+    return diffs
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--no-probe", action="store_true",
                         help="Skip parquet column sampling (faster, patterns only)")
     parser.add_argument("--release", type=str, default=None,
                         help="Refresh only one release tag (merge into existing manifest)")
+    parser.add_argument("--diff", action="store_true",
+                        help="Regenerate manifest and diff against committed version. "
+                             "Exit non-zero if upstream changed (new files, new columns, "
+                             "new years). Doesn't write. Use to gate CI/builds.")
     args = parser.parse_args()
+
+    if args.diff:
+        if not MANIFEST_PATH.exists():
+            print(f"ERROR: no committed manifest at {MANIFEST_PATH}")
+            return 2
+        with MANIFEST_PATH.open() as f:
+            old = json.load(f)
+        # --diff always probes so column-level drift is detectable.
+        # --no-probe is ignored here on purpose.
+        print("Comparing committed manifest against upstream...")
+        fresh = build_manifest(probe_columns_flag=True)
+        diffs = _structural_diff(old, fresh)
+        if not diffs:
+            print("\nNo upstream drift. Manifest matches current nflverse-data.")
+            return 0
+        print(f"\nUpstream drift detected ({len(diffs)} change(s)):")
+        for d in diffs:
+            print(f"  {d}")
+        print("\nAction required: review the diff, update schema.py if any new "
+              "data is relevant, then rerun `scripts/catalog.py` (without --diff) "
+              "to refresh data/nflverse_manifest.json and commit the change.")
+        return 1
 
     print("Building nflverse manifest:")
     manifest = build_manifest(

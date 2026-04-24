@@ -149,24 +149,45 @@ def _ensure_backfill_columns(df: pd.DataFrame, table_spec: dict) -> pd.DataFrame
     return df
 
 
-def build(output_path: Path, include_pbp: bool = True, validate_after: bool = True) -> dict:
+def build(output_path: Path, include_pbp: bool = True, validate_after: bool = True,
+          years: list[int] | None = None) -> dict:
+    """Run the full build pipeline.
+
+    Modes:
+      - Full rebuild (years=None): clean start, build everything from scratch.
+      - Incremental (years=[2025, ...]): open existing DB, update only
+        year-partitioned tables for the specified years. Non-year-partitioned
+        tables untouched. Hub is refreshed in pandas and new players are
+        INSERTed (existing players never UPDATEd — DuckDB's FK-parent
+        restriction; see docs/DESIGN_RATIONALE.md R3).
+    """
     cfg = schema
+    incremental = years is not None
     from hub import build_hub
     from engine import (
-        table_source_df, write_table, apply_id_backfill,
-        apply_fill_rule, compute_season_ratios,
+        table_source_df, write_table, write_partition, insert_new_hub_rows,
+        apply_id_backfill, apply_fill_rule, compute_season_ratios,
         validate, print_report,
     )
 
     start = time.time()
-    print(f"nflverse build → {output_path}")
+    mode_label = f"incremental (years={years})" if incremental else "full rebuild"
+    print(f"nflverse build → {output_path}  [{mode_label}]")
     print(f"  (source dir: {ROOT / 'data' / 'raw'})")
 
-    # Clean start
-    for suffix in ("", ".wal", ".bak"):
-        p = Path(str(output_path) + suffix)
-        if p.exists():
-            p.unlink()
+    if not incremental:
+        # Clean start for full rebuild
+        for suffix in ("", ".wal", ".bak"):
+            p = Path(str(output_path) + suffix)
+            if p.exists():
+                p.unlink()
+    else:
+        # Incremental: require the DB to exist (it's a prerequisite)
+        if not output_path.exists():
+            raise SystemExit(
+                f"Incremental build requires existing DB at {output_path}. "
+                f"Run without --years to do a full build first."
+            )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     conn = duckdb.connect(str(output_path))
@@ -177,23 +198,25 @@ def build(output_path: Path, include_pbp: bool = True, validate_after: bool = Tr
         hub_df = build_hub(cfg)
         print(f"\n  players hub: {len(hub_df):,} rows")
 
-        # ---- Phase 2.5: pre-scan child sources for missing FK targets ----
-        # A player might appear in a child table (depth_charts, injuries, etc.)
-        # but not in any hub source. Scan every child source for FK-target
-        # IDs not in the hub and append minimal stubs. Ensures 100% FK
-        # resolvability on phase-4 writes without per-child stub_source maps.
-        print("\n[Phase 2.5] Pre-stub unresolved child FK targets")
-        hub_df = _preflight_child_fk_stubs(hub_df, cfg)
+        if incremental:
+            # Incremental: don't rewrite players. INSERT-only new rows; never
+            # UPDATE (FK-parent restriction; docs/DESIGN_RATIONALE.md R3).
+            print("\n[Phase 3-incr] Insert new hub rows only")
+            added = insert_new_hub_rows(conn, hub_df, "player_gsis_id")
+            print(f"  +{added:,} new players (existing {len(hub_df)-added:,} untouched)")
+        else:
+            # Full: preflight + rewrite
+            print("\n[Phase 2.5] Pre-stub unresolved child FK targets")
+            hub_df = _preflight_child_fk_stubs(hub_df, cfg)
 
-        # ---- Phase 3: write players (and any other hub-built tables) ----
-        print("\n[Phase 3] Write players + other parents")
-        players_spec = cfg.TABLES["players"]
-        write_table(conn, "players", hub_df, players_spec)
-        for idx_cols in players_spec.get("indexes", []):
-            idx_name = "idx_players_" + "_".join(idx_cols)
-            conn.execute(
-                f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON players ({", ".join(idx_cols)})'
-            )
+            print("\n[Phase 3] Write players + other parents")
+            players_spec = cfg.TABLES["players"]
+            write_table(conn, "players", hub_df, players_spec)
+            for idx_cols in players_spec.get("indexes", []):
+                idx_name = "idx_players_" + "_".join(idx_cols)
+                conn.execute(
+                    f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON players ({", ".join(idx_cols)})'
+                )
 
         # ---- Phase 4: children in LOAD_ORDER ----
         print("\n[Phase 4] Load child tables in FK-dependency order")
@@ -207,17 +230,31 @@ def build(output_path: Path, include_pbp: bool = True, validate_after: bool = Tr
             spec = cfg.TABLES[tname]
             if spec.get("build_via") == "hub":
                 continue
+            # Incremental: only touch year-partitioned tables
+            src_id = spec.get("source_id") or (spec.get("source_ids") or [None])[0]
+            is_year_partitioned = False
+            if src_id:
+                src_pat = cfg.SOURCES.get(src_id, {}).get("pattern", "")
+                is_year_partitioned = "{year}" in src_pat
+            if incremental and not is_year_partitioned:
+                print(f"  SKIP {tname:<24} (not year-partitioned)")
+                continue
+
             print(f"  {tname:<24}", end=" ", flush=True)
             t0 = time.time()
-            df = table_source_df(tname, spec, cfg.SOURCES)
+            df = table_source_df(tname, spec, cfg.SOURCES, years=years)
             if df.empty:
                 print("no data")
                 continue
             df = _ensure_backfill_columns(df, spec)
             augmented_spec = dict(spec)
             augmented_spec["foreign_keys"] = _augment_foreign_keys_with_backfill(spec)
-            write_table(conn, tname, df, augmented_spec)
-            print(f"{len(df):>10,} rows  ({time.time()-t0:.1f}s)")
+            if incremental:
+                total = write_partition(conn, tname, df, "season", years or [])
+                print(f"{len(df):>10,} new rows → total {total:,}  ({time.time()-t0:.1f}s)")
+            else:
+                write_table(conn, tname, df, augmented_spec)
+                print(f"{len(df):>10,} rows  ({time.time()-t0:.1f}s)")
 
         # ---- Phase 5: ID backfill (UPDATEs fill the pre-added columns) ----
         print("\n[Phase 5] ID backfill")
@@ -304,10 +341,16 @@ def main():
     parser.add_argument("--output", type=str, default=str(DB_PATH))
     parser.add_argument("--no-pbp", action="store_true")
     parser.add_argument("--no-validate", action="store_true")
+    parser.add_argument("--years", nargs="+", type=int, default=None,
+                        help="Incremental: refresh only these year(s) in year-"
+                             "partitioned tables. Requires existing DB. "
+                             "Skips non-year-partitioned tables. Faster than "
+                             "full rebuild for in-season weekly refreshes.")
     args = parser.parse_args()
     report = build(Path(args.output),
                    include_pbp=not args.no_pbp,
-                   validate_after=not args.no_validate)
+                   validate_after=not args.no_validate,
+                   years=args.years)
     if report.get("hard_failures"):
         sys.exit(1)
 
