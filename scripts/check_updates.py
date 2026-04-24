@@ -5,6 +5,11 @@ Check for new/updated nflverse data by comparing GitHub releases against local D
 Queries the GitHub Releases API for nflverse-data and compares timestamps/asset lists
 against a local metadata file. Also scans local DBs for current row counts and max seasons.
 
+The release map is derived from ``schema.SOURCES``/``HUB_BUILD`` at import time, so
+every nflverse release the pipeline actually consumes is tracked — there's no
+hand-kept duplicate list to drift out of sync. External sources are pulled from
+the committed ``data/nflverse_manifest.json``.
+
 Usage:
     python3 scripts/check_updates.py           # Full check, human-readable report
     python3 scripts/check_updates.py --json    # Machine-readable JSON output
@@ -21,76 +26,102 @@ from urllib.request import Request, urlopen
 
 import duckdb
 
+import schema
 from config import DB_PATH, METADATA_PATH
 
 GITHUB_API = "https://api.github.com"
 NFLVERSE_REPO = "nflverse/nflverse-data"
 
-# Release tag -> (table(s), year-partitioned?, asset filename pattern)
-RELEASE_MAP = {
-    "stats_player": {
-        "tables": ["game_stats", "season_stats"],
-        "year_partitioned": True,
-        "asset_pattern": r"stats_player_week_(\d{4})",
-    },
-    "pbp": {
-        "tables": ["play_by_play"],
-        "year_partitioned": True,
-        "asset_pattern": r"play_by_play_(\d{4})",
-    },
-    "snap_counts": {
-        "tables": ["snap_counts"],
-        "year_partitioned": True,
-        "asset_pattern": r"snap_counts_(\d{4})",
-    },
-    "depth_charts": {
-        "tables": ["depth_charts", "depth_charts_2025"],
-        "year_partitioned": True,
-        "asset_pattern": r"depth_charts_(\d{4})",
-    },
-    "nextgen_stats": {
-        "tables": ["ngs_stats"],
-        "year_partitioned": False,
-        "asset_pattern": None,
-    },
-    "pfr_advstats": {
-        "tables": ["pfr_advanced"],
-        "year_partitioned": False,
-        "asset_pattern": None,
-    },
-    "players": {
-        "tables": ["players"],
-        "year_partitioned": False,
-        "asset_pattern": None,
-    },
-    "draft_picks": {
-        "tables": ["draft_picks"],
-        "year_partitioned": False,
-        "asset_pattern": None,
-    },
-    "combine": {
-        "tables": ["combine"],
-        "year_partitioned": False,
-        "asset_pattern": None,
-    },
-    "schedules": {
-        "tables": ["games"],
-        "year_partitioned": False,
-        "asset_pattern": None,
-    },
-}
 
-# Separate repos checked via HTTP HEAD (no GitHub Releases API)
-EXTERNAL_SOURCES = {
-    "player_ids": {
-        "url": "https://github.com/dynastyprocess/data/raw/master/files/db_playerids.csv",
-        "tables": ["player_ids"],
-    },
-    "qbr": {
-        "url": "https://raw.githubusercontent.com/nflverse/espnscrapeR-data/master/data/qbr-nfl-weekly.csv",
-        "tables": ["qbr"],
-    },
-}
+def _derive_release_map():
+    """Build {release_tag: {tables, year_partitioned, asset_pattern}} from schema.SOURCES.
+
+    Auto-derived so it can never drift from the build pipeline. Every source
+    declares its release_tag and file pattern; we invert TABLES to find which
+    tables consume each source. Year-partitioned releases get a regex that
+    extracts the year from asset filenames (for new-year-file detection).
+    """
+    source_to_tables: dict[str, list[str]] = {}
+    for tname, t in schema.TABLES.items():
+        if t.get("build_via") in ("hub", "sql"):
+            continue
+        sids = []
+        if t.get("source_id"):
+            sids.append(t["source_id"])
+        sids.extend(t.get("source_ids", []))
+        for s in sids:
+            source_to_tables.setdefault(s, []).append(tname)
+
+    for hub_src in schema.HUB_BUILD.get("sources", []):
+        sid = hub_src.get("source_id")
+        if sid:
+            source_to_tables.setdefault(sid, []).append("players")
+
+    m: dict[str, dict] = {}
+    for source_id, info in schema.SOURCES.items():
+        tag = info.get("release_tag")
+        pattern = info.get("pattern", "")
+        if not tag or pattern.startswith("external/"):
+            continue
+        tables = source_to_tables.get(source_id, [])
+        if not tables:
+            continue
+        entry = m.setdefault(tag, {"tables": [], "year_partitioned": False, "asset_pattern": None})
+        for t in tables:
+            if t not in entry["tables"]:
+                entry["tables"].append(t)
+        if "{year}" in pattern:
+            entry["year_partitioned"] = True
+            if entry["asset_pattern"] is None:
+                filename = pattern.rsplit("/", 1)[-1].replace(".parquet", "")
+                entry["asset_pattern"] = re.escape(filename).replace(r"\{year\}", r"(\d{4})")
+    return m
+
+
+def _derive_external_sources():
+    """Build {name: {url, tables}} from manifest.external_sources cross-referenced
+    against schema.SOURCES (so tables come from the pipeline, URL from the manifest)."""
+    source_to_tables: dict[str, list[str]] = {}
+    for tname, t in schema.TABLES.items():
+        if t.get("build_via") in ("hub", "sql"):
+            continue
+        sids = []
+        if t.get("source_id"):
+            sids.append(t["source_id"])
+        sids.extend(t.get("source_ids", []))
+        for s in sids:
+            source_to_tables.setdefault(s, []).append(tname)
+
+    from pathlib import Path as _Path
+    manifest_path = _Path(__file__).resolve().parents[1] / "data" / "nflverse_manifest.json"
+    if not manifest_path.exists():
+        return {}
+    with manifest_path.open() as f:
+        manifest = json.load(f)
+
+    out = {}
+    for mname, minfo in manifest.get("external_sources", {}).items():
+        local_path = minfo.get("local_path", "")
+        url = minfo.get("url")
+        if not url or not local_path:
+            continue
+        matching_source_id = None
+        for sid, sinfo in schema.SOURCES.items():
+            pattern = sinfo.get("pattern", "")
+            if pattern == f"external/{local_path}" or pattern.endswith(local_path):
+                matching_source_id = sid
+                break
+        if not matching_source_id:
+            continue
+        tables = source_to_tables.get(matching_source_id, [])
+        if not tables:
+            continue
+        out[matching_source_id] = {"url": url, "tables": tables}
+    return out
+
+
+RELEASE_MAP = _derive_release_map()
+EXTERNAL_SOURCES = _derive_external_sources()
 
 
 def github_get(path):
