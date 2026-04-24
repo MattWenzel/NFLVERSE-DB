@@ -1393,7 +1393,7 @@ nflverse pre-calculates fantasy points using standard scoring:
 
 ## Data Source
 
-Data is sourced from [nflverse](https://github.com/nflverse) via `nflreadpy` (successor to the archived `nfl_data_py`).
+Data is sourced directly from the [nflverse-data](https://github.com/nflverse/nflverse-data) release parquets (not through `nflreadpy`/`nflreadr` — the build reads raw release files).
 
 ---
 
@@ -1417,7 +1417,7 @@ See [`../README.md`](../README.md) for the full CLI reference and [`DESIGN_RATIO
 - **Column naming**: All tables use nflverse-native column names — no custom renames applied during load.
 - **All position groups**: `game_stats`/`season_stats` include ~115 columns covering every position (offensive, defensive, kicking, special teams).
 - **`season_stats.recent_team`**: Backfilled from `game_stats.team` (most common team per player-season); nflverse source doesn't always populate it.
-- **`game_id` in `game_stats`**: Populated only for 2022, 2023, and 2025 — NULL for 1999–2021 and for 2024 (nflverse hasn't backfilled those seasons). Filter on `game_id IS NOT NULL` or join against `games` on `(season, week, team, opponent_team)` when you need game context for the unpopulated years.
+- **`game_id` in `game_stats`**: Populated for ~89% of rows post-build. The `game_id_from_games` fill rule derives `game_id` from `games` on `(season, week, team, opponent_team)` for rows where upstream left it NULL. Remaining gap is games for which opponent_team is NULL upstream — filter on `game_id IS NOT NULL` when a hard join is required.
 - **`depth_charts` vs `depth_charts_2025`**: Separate tables due to nflverse schema change in 2025. The 2025+ format uses daily snapshots (`dt` column) instead of weekly, and has a different position structure.
 - **`combine` table**: Has no join edges to other tables — query separately.
 - **NGS `stat_type`**: `passing`, `rushing`, `receiving`; `week=0` = season totals.
@@ -1425,5 +1425,4 @@ See [`../README.md`](../README.md) for the full CLI reference and [`DESIGN_RATIO
 - **QBR**: `season_type` is `"Regular"` or `"Postseason"`. No season-total rows exist — aggregate weekly rows with `AVG(qbr_total)` grouped by player + season. Filter `qualified = 1` (ESPN's qualifying threshold) or `qb_plays >= 200` for starter-level samples.
 - **Schema drift**: Handled automatically by the build scripts, which add missing columns via `ALTER TABLE`.
 - **Join path**: `game_stats.player_gsis_id = players.player_gsis_id` — direct join, no name translation needed.
-- **`nfl_data_py`**: Archived Sept 2025. Successor is `nflreadpy`.
 - **Draft picks**: Go back to 1980 with career stats, Pro Bowl/All-Pro counts, and HOF flag.

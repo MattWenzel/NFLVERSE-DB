@@ -1,16 +1,16 @@
 # NFLVERSE v1 → v3 comparison
 
-_Focused v1 → v3 delta. For the full three-way view with v2, see [V3_THREE_WAY_COMPARISON.md](V3_THREE_WAY_COMPARISON.md)._
+_Historical migration reference. v3 is now shipping on `main`; v1 is retained as the `v1-final` git tag._
 
 ## Top-line
 
 | Metric | v1 | v3 | Δ |
 |---|---:|---:|---:|
-| Tables | 14 | 25 | +11 |
-| Foreign keys | 60 | 78 | +18 |
-| Total rows | 3,592,983 | 5,777,445 | +2,184,462 |
-| DuckDB size | 906 MB | 1,278 MB | +372 MB |
-| Build time | ~2 min | ~7-13 min | longer (25 vs 14 tables + survey + gates) |
+| Tables | 14 | 27 | +13 |
+| Foreign keys | 60 | 79 | +19 |
+| Total rows | 3,592,983 | 5,782,340 | +2,189,357 |
+| DuckDB size | 906 MB | 1,280 MB | +374 MB |
+| Build time | ~2 min | ~8 min | longer (27 vs 14 tables + survey + gates) |
 
 ## New in v3 (vs v1)
 
@@ -22,9 +22,13 @@ _Focused v1 → v3 delta. For the full three-way view with v2, see [V3_THREE_WAY
 - `pbp_participation` — 478,989 rows
 - `pfr_advanced_weekly` — 121,954 rows
 - `stadiums` — 62 rows (derived from `games.stadium_id`)
+- `teams` — 36 rows (team-abbr metadata: conference/division/colors/nickname)
+- `trades` — 4,847 rows (player/pick trade history, 1999+)
 - `team_game_stats` — 14,531 rows
 - `team_season_stats` — 1,198 rows
 - `weekly_rosters` — 906,378 rows
+
+Plus three analytical views: `v_depth_charts`, `v_player_careers`, `v_draft_pick_careers`.
 
 ## Regression-free on shared tables
 
@@ -84,9 +88,9 @@ _Focused v1 → v3 delta. For the full three-way view with v2, see [V3_THREE_WAY
 
 **`expected_gaps` declarations on SOURCES** — data-reality annotations (e.g., `combine.player_pfr_id.null_rate.max = 0.22`). Validation checks observed vs declared within 2pp. Makes normal data reality explicit instead of treating it as a bug.
 
-**`scripts/canary_queries.py` + `data/canary_proof.json`** — 15 committed LLM-style queries with expected result shapes. Each build regenerates proof; `--verify` diffs for regressions. Would have caught v2's draft_picks regression automatically.
+**`scripts/canary_queries.py` + `data/canary_proof.json`** — 19 committed LLM-style queries with expected result shapes. Each build regenerates proof; `--verify` diffs for regressions. Would have caught v2's draft_picks regression automatically.
 
-**`docs/DESIGN_RATIONALE.md`** — 17 rules with origin, code path, and don't-change-without clause. Every v1/v2 scar encoded as institutional memory. The 'why' outlives the code.
+**`docs/DESIGN_RATIONALE.md`** — 18 rules with origin, code path, and don't-change-without clause. Every v1/v2 scar encoded as institutional memory. The 'why' outlives the code.
 
 **`docs/LESSONS_LEARNED.md`** — field guide of upstream reality, technical constraints, pipeline architecture, query ergonomics, process lessons. Required reading before dropping any v1/v2 mechanism.
 
@@ -112,12 +116,13 @@ _Focused v1 → v3 delta. For the full three-way view with v2, see [V3_THREE_WAY
 ## Full build timing
 
 - v1: ~2-3 min (14 tables, no catalog or survey)
-- v2: 5:42 (23 tables, first clean build)
-- v3: 4:48 (23 tables + survey + gates)
+- v3: ~8 min (27 tables + survey + gates + pandas-first fills)
+
+Incremental rebuild (`--years 2025`) completes in ~60s.
 
 ## Integrity invariants
 
-All three versions satisfy:
+Both v1 and v3 satisfy:
 - 0 orphans across declared FKs
 - 0 game_stats → season_stats gap
 - 0 duplicate IDs on players (gsis / pfr / espn)

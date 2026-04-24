@@ -9,7 +9,7 @@ for query-authoring correctness.
 
 ## Quick orientation
 
-Single DuckDB file with **25 tables + 1 view**, **78 foreign keys**, covering
+Single DuckDB file with **27 tables + 3 views**, **79 foreign keys**, covering
 **1999–2025**. Every player-bearing table carries `player_gsis_id` as the
 canonical join key.
 
@@ -18,10 +18,11 @@ Tables by role:
 - **Weekly/seasonal player stats:** `game_stats`, `season_stats`, `snap_counts`,
   `pfr_advanced`, `pfr_advanced_weekly`, `ngs_stats`, `qbr`, `weekly_rosters`,
   `depth_charts`, `depth_charts_2025`, `injuries`
-- **Team:** `team_game_stats`, `team_season_stats`, `officials`
+- **Team:** `team_game_stats`, `team_season_stats`, `officials`, `teams`, `trades`
 - **Player meta/contracts:** `combine`, `draft_picks`, `contracts`,
   `contracts_cap_breakdown`
 - **Play-by-play:** `play_by_play`, `pbp_participation`, `ftn_charting`
+- **Views:** `v_depth_charts` (legacy + 2025 unified), `v_player_careers` (per-player REG+POST totals), `v_draft_pick_careers` (draft_picks ⨝ v_player_careers)
 
 ## Join everywhere via `player_gsis_id`
 
@@ -211,7 +212,7 @@ python3 scripts/canary_queries.py --verify
 # touch the build.
 ```
 
-The 17 canaries:
+The 19 canaries:
 
 | id | what it tests |
 |---|---|
@@ -229,9 +230,11 @@ The 17 canaries:
 | Q12 | Defensive PFR advanced stats coverage |
 | Q13 | QBR canonical GSIS join (`qbr` id_backfill) |
 | Q14 | FTN charting play-count by season |
-| Q15 | FK orphan sweep across all 78 FKs |
+| Q15 | FK orphan sweep across all 79 FKs |
 | Q16 | Starting QBs by games since 2020 (`games.home_qb_id`/`away_qb_id`) |
 | Q17 | FTN charting joined to `play_by_play` on `(game_id, play_id)` |
+| Q18 | Career passing TD leaders via `v_player_careers` (view aggregation) |
+| Q19 | 2005 R1 draft picks by career PPR via `v_draft_pick_careers` |
 
 ---
 

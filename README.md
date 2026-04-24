@@ -6,15 +6,15 @@ Scripts that turn [nflverse](https://github.com/nflverse/nflverse-data) — the 
 
 nflverse publishes its data as per-season parquet files across ~24 release tags, and the mainstream way to use it (via [`nflreadpy`](https://github.com/nflverse/nflreadpy) or R's [`nflreadr`](https://github.com/nflverse/nflreadr)) loads those files into DataFrames on every call. Great for a one-off analysis; not for repeated cross-table questions. A single DuckDB file fixes that:
 
-- **Ask real questions in SQL.** 25 tables wired together with 78 foreign keys — join `game_stats → players → games → snap_counts` or `play_by_play → ftn_charting → stadiums` in one query.
+- **Ask real questions in SQL.** 27 tables wired together with 79 foreign keys — join `game_stats → players → games → snap_counts` or `play_by_play → ftn_charting → stadiums` in one query.
 - **Offline and fast.** One `.duckdb` file. Columnar storage with zone maps makes aggregates on the 1.28M-row, 372-column `play_by_play` table fly.
 - **Deterministic.** Build once, pin a snapshot, reproduce the same answer tomorrow. Catalog + survey gates prevent upstream drift from sneaking in.
 - **LLM-friendly.** Every player-bearing table carries `player_gsis_id` regardless of the source's native ID; every game-bearing table carries `game_id`. One join pattern across the whole DB.
 
 | Database | Size | Tables | Rows | Years |
 |---|---|---|---|---|
-| `data/nflverse.duckdb` | ~1.2 GB | 25 | ~5.5M | 1999–2025 |
-| `data/nflverse.sqlite` (optional) | ~3.3 GB | 25 | ~5.5M | 1999–2025 |
+| `data/nflverse.duckdb` | ~1.25 GB | 27 | ~5.78M | 1999–2025 |
+| `data/nflverse.sqlite` (optional) | ~3.3 GB | 27 | ~5.78M | 1999–2025 |
 
 ## Quick start
 
@@ -46,7 +46,9 @@ Full build is ~7-15 min depending on play_by_play load speed. Incremental refres
 
 **Both-linked**: `game_stats`, `season_stats`, `pfr_advanced_weekly`, `play_by_play`, `pbp_participation`, `ftn_charting`
 
-**Views**: `v_depth_charts` — cross-schema composite of the two depth_charts tables with normalized columns.
+**Reference**: `teams`, `trades`
+
+**Views**: `v_depth_charts` (cross-schema composite of the two depth_charts tables), `v_player_careers` (per-player REG+POST career rollup from `season_stats`), `v_draft_pick_careers` (`draft_picks` LEFT JOIN `v_player_careers`).
 
 See [`docs/DATABASE.md`](docs/DATABASE.md) for the full schema and [`docs/DESIGN_RATIONALE.md`](docs/DESIGN_RATIONALE.md) for the rules behind every non-obvious decision.
 
@@ -81,8 +83,8 @@ Eleven phases, each producing an artifact the next phase validates against:
 | 6. ID backfill | `player_gsis_id` populated on PFR/ESPN-native tables (pandas merge, bulk-replace) |
 | 7. Name-match recovery | Pre-GSIS HoF draft picks resolved by `(name, position, season-active)` (pandas) |
 | 8. Fill rules | Cross-table value backfills (pandas for >100K-row tables, SQL UPDATE for `players`) |
-| 9. Views + indexes | `v_depth_charts`; hash indexes on frequent joins |
-| 10. Validation | `data/canary_proof.json` — 17 committed LLM queries; plus FK orphan sweep, 0-tolerance integrity gates |
+| 9. Views + indexes | `v_depth_charts`, `v_player_careers`, `v_draft_pick_careers`; hash indexes on frequent joins |
+| 10. Validation | `data/canary_proof.json` — 19 committed LLM queries; plus FK orphan sweep, 0-tolerance integrity gates |
 
 See [`docs/DESIGN_RATIONALE.md`](docs/DESIGN_RATIONALE.md) for the 18 rules that each phase exists to enforce, and [`docs/LESSONS_LEARNED.md`](docs/LESSONS_LEARNED.md) for the upstream-data reality that motivated the design. Phases 6-8 join in pandas and bulk-replace tables — `UPDATE ... SET ... (SELECT ... correlated)` on a 906K-row table measured 10+ minutes; the pandas path runs in under a minute (R18).
 
@@ -161,8 +163,7 @@ python3 scripts/build.py --years 2025      # ~60s vs full-rebuild minutes
 | `docs/DATABASE.md` | Schema reference — tables, columns, FKs, join examples |
 | `docs/DESIGN_RATIONALE.md` | Every non-obvious design decision + the incident it addresses |
 | `docs/LESSONS_LEARNED.md` | Field guide of upstream-data reality and process lessons |
-| `docs/V3_COMPARISON.md` | v1 → v3 delta |
-| `docs/V3_THREE_WAY_COMPARISON.md` | v1 vs v2 vs v3 live-numbers comparison |
+| `docs/V3_COMPARISON.md` | v1 → v3 delta (historical migration reference) |
 
 ## Notes
 
@@ -203,7 +204,7 @@ Per CC-BY-4.0 §3(a)(1)(B), these build scripts modify the source data while loa
 - Two ID-adjacent columns are namespace-renamed: `officials.game_id → old_game_id` (NFL-internal format, not nflverse canonical); `qbr.game_id` stays but is explicitly ESPN-namespaced (no FK to games).
 - A `stat_type` column is added to `ngs_stats` and `pfr_advanced` to distinguish the sub-types.
 - Two derived reference tables: `stadiums` (62 rows, from `games.stadium_id`), `contracts_cap_breakdown` (302K rows, flattens `contracts.cols` struct array).
-- 78 foreign-key constraints declared at table-creation time; consumers auto-derive the join graph via `duckdb_constraints()`.
+- 79 foreign-key constraints declared at table-creation time; consumers auto-derive the join graph via `duckdb_constraints()`.
 
 Individual numeric stat values from nflverse's feeds are not altered. Derived aggregate rows (season_stats augmentation, contracts cap breakdown) are computed from their upstream sources.
 
