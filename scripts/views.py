@@ -21,6 +21,8 @@ def v_player_careers_sql() -> str:
         SELECT
             player_gsis_id,
             MAX(player_display_name)                                     AS player_display_name,
+            -- alias matching players.display_name so either guess works
+            MAX(player_display_name)                                     AS display_name,
             MAX(position)                                                AS position,
             MAX(position_group)                                          AS position_group,
             MIN(season) FILTER (WHERE season_type = 'REG')               AS first_season,
