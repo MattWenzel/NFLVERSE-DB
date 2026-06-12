@@ -155,6 +155,12 @@ def load_source(source_id: str, source_spec: dict, years: list[int] | None = Non
         if col in df.columns:
             df[col] = clean_id(df[col], kind=kind)
 
+    # Normalize drifted categorical values (e.g. JAC→JAX team-code variant
+    # that only the stats feeds use for 2001-2002).
+    for col, mapping in source_spec.get("replace_values", {}).items():
+        if col in df.columns:
+            df[col] = df[col].replace(mapping)
+
     # Null out colliding values in columns the target table declares UNIQUE
     # (e.g. provisional old_game_id placeholders on unscheduled future games).
     for col in source_spec.get("null_duplicate_values", []):

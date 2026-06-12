@@ -130,6 +130,18 @@ JOIN games g
    OR (g.away_team = gs.team AND g.home_team = gs.opponent_team));
 ```
 
+### 4b. Relocated franchises: group by `teams.team_id`, not team code
+
+Stat tables use era-correct codes (OAK through 2019, LV after; SD/LAC; STL/LA).
+`teams.team_id` is shared across a franchise's eras — "Raiders all-time" is:
+
+```sql
+SELECT SUM(tss.passing_yards)
+FROM team_season_stats tss
+JOIN teams t ON t.team_abbr = tss.team
+WHERE t.team_id = (SELECT team_id FROM teams WHERE team_abbr = 'LV');
+```
+
 ### 5. Position granularity differs across tables
 
 - `players.position`, `weekly_rosters.position` → **position GROUPS** (`QB`, `RB`, `WR`, `TE`, `OL`, `DL`, `LB`, `DB`, `K`, `P`, `SPEC`).

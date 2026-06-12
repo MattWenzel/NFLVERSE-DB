@@ -92,6 +92,9 @@ SOURCES: dict = {
         "pattern": "stats_player/stats_player_week_{year}.parquet",
         "year_range": ("auto", "auto"),
         "renames": {"player_id": "player_gsis_id"},
+        # 2001-2002 files code Jacksonville as JAC; everything else (games,
+        # rosters, pbp) uses JAX — normalize so joins and fills line up.
+        "replace_values": {"team": {"JAC": "JAX"}, "recent_team": {"JAC": "JAX"}, "opponent_team": {"JAC": "JAX"}},
         "id_cleanup": {"player_gsis_id": "gsis", "game_id": "generic"},
         "force_types": {"game_id": "VARCHAR"},
         "ensure_columns": {"game_id": "VARCHAR"},  # missing in pre-2022 files
@@ -101,6 +104,7 @@ SOURCES: dict = {
         "pattern": "stats_player/stats_player_reg_{year}.parquet",
         "year_range": ("auto", "auto"),
         "renames": {"player_id": "player_gsis_id"},
+        "replace_values": {"team": {"JAC": "JAX"}, "recent_team": {"JAC": "JAX"}, "opponent_team": {"JAC": "JAX"}},
         "id_cleanup": {"player_gsis_id": "gsis"},
     },
     "stats_player_post": {
@@ -108,6 +112,7 @@ SOURCES: dict = {
         "pattern": "stats_player/stats_player_post_{year}.parquet",
         "year_range": ("auto", "auto"),
         "renames": {"player_id": "player_gsis_id"},
+        "replace_values": {"team": {"JAC": "JAX"}, "recent_team": {"JAC": "JAX"}, "opponent_team": {"JAC": "JAX"}},
         "id_cleanup": {"player_gsis_id": "gsis"},
     },
 
@@ -407,6 +412,7 @@ SOURCES: dict = {
         "pattern": "stats_team/stats_team_week_{year}.parquet",
         "year_range": ("auto", "auto"),
         "renames": {},
+        "replace_values": {"team": {"JAC": "JAX"}, "recent_team": {"JAC": "JAX"}, "opponent_team": {"JAC": "JAX"}},
         "id_cleanup": {"game_id": "generic"},
     },
     "stats_team_reg": {
@@ -414,6 +420,7 @@ SOURCES: dict = {
         "pattern": "stats_team/stats_team_reg_{year}.parquet",
         "year_range": ("auto", "auto"),
         "renames": {},
+        "replace_values": {"team": {"JAC": "JAX"}, "recent_team": {"JAC": "JAX"}, "opponent_team": {"JAC": "JAX"}},
         "id_cleanup": {},
     },
     "stats_team_post": {
@@ -421,6 +428,7 @@ SOURCES: dict = {
         "pattern": "stats_team/stats_team_post_{year}.parquet",
         "year_range": ("auto", "auto"),
         "renames": {},
+        "replace_values": {"team": {"JAC": "JAX"}, "recent_team": {"JAC": "JAX"}, "opponent_team": {"JAC": "JAX"}},
         "id_cleanup": {},
     },
 

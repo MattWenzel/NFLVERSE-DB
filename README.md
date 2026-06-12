@@ -167,6 +167,7 @@ python3 scripts/build.py --years 2025      # ~60s vs full-rebuild minutes
 
 ## Notes
 
+- `teams.team_id` is the FRANCHISE key: relocated teams share it (OAK/LV = 2520, SD/LAC = 4400, STL/LA/LAR = 2510). For all-time franchise queries, join era codes through `teams.team_abbr` and group by `team_id`.
 - `players.position` / `weekly_rosters.position` use position GROUPS (DB, LB, CB, …); `snap_counts.position` uses fine-grained ROLES (FS, WLB, LCB, …). These are complementary, not conflicting — use whichever granularity fits your query.
 - `qbr.game_id` is nflverse-canonical (filled from `games.espn` for 10,705/10,709 rows; FK to games). ESPN's native numeric id is preserved as `qbr.espn_game_id`.
 - `officials.old_game_id` matches `games.old_game_id` (NFL's YYYYMMDDGG format) — that's how to join officials to games.
@@ -191,7 +192,8 @@ The data itself is **not** part of this repository — it's downloaded from nflv
 
 Per CC-BY-4.0 §3(a)(1)(B), these build scripts modify the source data while loading it:
 
-- Junk ID sentinels (`''`, `'0'`, `'XX-0000001'`, etc.) are normalized to NULL. Rows are preserved; only the bad-reference column is cleared.
+- Junk ID sentinels (`''`, `'0'`, `'XX-0000001'`, etc.) are normalized to NULL.
+- The `JAC` team-code variant (2001-2002 stats feeds only) is normalized to `JAX` to match every other table. Rows are preserved; only the bad-reference column is cleared.
 - Player-ID columns on player-level tables are normalized to `player_gsis_id` / `player_pfr_id` / `player_espn_id` so cross-table joins don't need name translation. The `player_ids` bridge keeps its short column names.
 - Duplicate rows are removed on each table's natural key.
 - The `players` registry is enriched beyond nflverse's primary `players.parquet`: a priority-merge across `players.parquet`, `db_playerids.csv` (dynastyprocess), `weekly_rosters`, `draft_picks`, and `combine` produces one canonical row per player. Stubs are added for any FK target not otherwise resolvable.

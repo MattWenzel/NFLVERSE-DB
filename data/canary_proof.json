@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-12T21:53:48.368234+00:00",
+  "generated_at": "2026-06-12T23:00:10.907100+00:00",
   "db_path": "/home/mattw813/Documents/NFLVERSE/data/nflverse.duckdb",
   "queries": {
     "Q1": {
@@ -195,13 +195,13 @@
           "games": 106
         },
         {
-          "official_name": "Ronald Torbert",
-          "position": "Referee",
+          "official_name": "Danny Short",
+          "position": "Down Judge",
           "games": 104
         },
         {
-          "official_name": "Danny Short",
-          "position": "Down Judge",
+          "official_name": "Ronald Torbert",
+          "position": "Referee",
           "games": 104
         }
       ],
