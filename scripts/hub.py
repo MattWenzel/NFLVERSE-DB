@@ -316,8 +316,8 @@ def _name_match_preflight(hub: pd.DataFrame, source_dfs: dict,
         ),
         (
             "player_espn_id",
-            {"qbr_week": "name_short", "depth_charts_2025": "player_name"},
-            {"qbr_week": None, "depth_charts_2025": "pos_abb"},
+            {"qbr_week": "name_short", "depth_charts_daily": "player_name"},
+            {"qbr_week": None, "depth_charts_daily": "pos_abb"},
         ),
     ]:
         existing_ids = set(hub[target_col].dropna())
@@ -419,7 +419,7 @@ def _emit_child_stubs(hub: pd.DataFrame, source_dfs: dict, entry: dict,
         "qbr_week": ("player_espn_id", {
             "display_name": "name_short", "latest_team": "team_abb",
         }),
-        "depth_charts_2025": ("player_espn_id", {
+        "depth_charts_daily": ("player_espn_id", {
             "display_name": "player_name", "latest_team": "team", "position": "pos_abb",
         }),
     }

@@ -21,5 +21,5 @@ YEAR_RANGE_START = {
 }
 
 # depth_charts schema changed in 2025 — pre-2025 lives in `depth_charts`,
-# 2025+ lives in `depth_charts_2025` (handled as full_replace).
-DEPTH_CHARTS_LEGACY_END = 2025  # exclusive upper bound for the old table
+# 2025+ lives in `depth_charts_daily` (year-partitioned daily files; the
+# year window split is declared on the two SOURCES entries in schema.py).

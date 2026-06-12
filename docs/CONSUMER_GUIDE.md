@@ -9,15 +9,15 @@ for query-authoring correctness.
 
 ## Quick orientation
 
-Single DuckDB file with **27 tables + 3 views**, **79 foreign keys**, covering
-**1999–2025**. Every player-bearing table carries `player_gsis_id` as the
+Single DuckDB file with **27 tables + 3 views**, **81 foreign keys**, covering
+**1999–2026**. Every player-bearing table carries `player_gsis_id` as the
 canonical join key.
 
 Tables by role:
 - **Parents:** `players`, `player_ids`, `games`, `stadiums`
 - **Weekly/seasonal player stats:** `game_stats`, `season_stats`, `snap_counts`,
   `pfr_advanced`, `pfr_advanced_weekly`, `ngs_stats`, `qbr`, `weekly_rosters`,
-  `depth_charts`, `depth_charts_2025`, `injuries`
+  `depth_charts`, `depth_charts_daily`, `injuries`
 - **Team:** `team_game_stats`, `team_season_stats`, `officials`, `teams`, `trades`
 - **Player meta/contracts:** `combine`, `draft_picks`, `contracts`,
   `contracts_cap_breakdown`
@@ -35,7 +35,7 @@ ORDER BY ss.passing_yards DESC LIMIT 5;
 ```
 
 Even tables whose upstream source is PFR-native (`snap_counts`, `pfr_advanced`,
-`combine`) or ESPN-native (`qbr`, `depth_charts_2025`) carry `player_gsis_id`
+`combine`) or ESPN-native (`qbr`, `depth_charts_daily`) carry `player_gsis_id`
 after build-time backfill. Use GSIS. Source-native IDs (`player_pfr_id`,
 `player_espn_id`) are also present if you need them.
 
@@ -69,22 +69,21 @@ WHERE a.table_name = 'snap_counts' AND b.table_name = 'game_stats';
 
 These are the patterns that produce wrong-looking-right results if you miss them.
 
-### 1. `qbr.game_id` is **ESPN's numeric ID**, not nflverse's
+### 1. `qbr` carries BOTH a canonical `game_id` and ESPN's `espn_game_id`
 
 ```sql
--- WRONG — silently joins nothing, returns 0 rows
-SELECT * FROM qbr q JOIN games g ON g.game_id = q.game_id;
-
--- RIGHT — qbr is ESPN-namespace; join via player_gsis_id + (season, week) instead
+-- Canonical join — game_id is filled from games via the ESPN id bridge
 SELECT p.display_name, q.qbr_total, g.home_team, g.away_team
 FROM qbr q
+JOIN games g USING (game_id)
 JOIN players p USING (player_gsis_id)
-JOIN games g ON g.season = q.season AND g.week = q.game_week
 WHERE q.qualified = TRUE;
 ```
 
-`qbr.game_id` values look like `'260910009'`. `games.game_id` values look like
-`'2015_09_SEA_GB'`. They are different namespaces; no crosswalk exists.
+`qbr.espn_game_id` holds ESPN's numeric id (`'260910009'`); `qbr.game_id` holds
+nflverse's (`'2015_09_SEA_GB'`), populated for 10,705 of 10,709 rows by matching
+`games.espn` (the 4 stragglers are games missing an ESPN id upstream). The FK
+`qbr.game_id → games.game_id` is declared, so the join graph is discoverable.
 
 ### 2. `officials` joins to `games` via `old_game_id`, not `game_id`
 
@@ -113,12 +112,14 @@ WHERE defense_snaps > 0      -- or offense_snaps > 0, depending on the query
 Don't retry with a different join pattern when these come back with NULL stats;
 the data isn't there.
 
-### 4. `game_stats.game_id` is ~89% populated — know the gap pattern
+### 4. `game_stats.game_id` is ~99.5% populated — know the gap pattern
 
 Pre-2022 weekly stats files didn't carry `game_id` upstream. The build
-derives `game_id` post-hoc via `(season, week, team, opponent_team) → games`
-lookup, which fills most but not all. If you need a reliable join to `games`
-for every `game_stats` row, use the derivation pattern directly:
+derives `game_id` post-hoc by matching `games` on (season, week) where the
+row's team codes appear, guarded so an ambiguous week never fills a wrong
+game. The same fill covers `team_game_stats.game_id`. The residual NULLs are
+rows whose game can't be matched unambiguously in `games`; if you need a
+join for those too, use the derivation pattern directly:
 
 ```sql
 SELECT gs.*, g.game_id, g.home_team, g.away_team
@@ -133,7 +134,7 @@ JOIN games g
 
 - `players.position`, `weekly_rosters.position` → **position GROUPS** (`QB`, `RB`, `WR`, `TE`, `OL`, `DL`, `LB`, `DB`, `K`, `P`, `SPEC`).
 - `snap_counts.position` → **fine-grained ROLES** (`FS`, `WLB`, `ILB`, `LCB`, `LT`, `RT`, `LG`, etc.).
-- `depth_charts_2025.pos_abb` → also fine-grained.
+- `depth_charts_daily.pos_abb` → also fine-grained.
 - `v_depth_charts.position` → normalized to **position GROUPS** across both eras.
 
 These are complementary, not conflicting. A player with
@@ -230,11 +231,14 @@ The 19 canaries:
 | Q12 | Defensive PFR advanced stats coverage |
 | Q13 | QBR canonical GSIS join (`qbr` id_backfill) |
 | Q14 | FTN charting play-count by season |
-| Q15 | FK orphan sweep across all 79 FKs |
+| Q15 | FK orphan sweep across all 81 FKs |
 | Q16 | Starting QBs by games since 2020 (`games.home_qb_id`/`away_qb_id`) |
 | Q17 | FTN charting joined to `play_by_play` on `(game_id, play_id)` |
 | Q18 | Career passing TD leaders via `v_player_careers` (view aggregation) |
 | Q19 | 2005 R1 draft picks by career PPR via `v_draft_pick_careers` |
+| Q20 | 2026 R1 draft picks resolve in the hub (offseason draft-class load) |
+| Q21 | `v_depth_charts` covers both daily-era seasons (2025 + 2026) |
+| Q22 | QBR joined to `games` via canonical `game_id` |
 
 ---
 
@@ -259,7 +263,7 @@ worth surfacing in their prompt:
 - `qbr` covers 2006–2025 (v1 had espnscrapeR data only through 2023)
 - `season_stats` includes POST (v1 was REG-only)
 - `draft_picks.player_gsis_id` at 82% (v1 unchanged at 81%)
-- `game_stats.game_id` at 89% populated (v1 was 12%)
+- `game_stats.game_id` at ~99.5% populated (v1 was 12%); `team_game_stats.game_id` and `qbr.game_id` likewise filled from `games`
 
 **New canonical join paths:**
 - `player_gsis_id` on every player-bearing table (v1 had some as PFR/ESPN-only)

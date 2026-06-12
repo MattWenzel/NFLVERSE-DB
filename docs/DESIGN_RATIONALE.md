@@ -16,7 +16,7 @@ don't want to re-make; this doc is the mechanism-level implementation record).
 Same for `player_pfr_id` and `player_espn_id`.
 
 **Why:** `PRIMARY KEY` implies `NOT NULL` in DuckDB and SQLite. Stubs from
-PFR-only or ESPN-only child sources (combine, qbr, depth_charts_2025) carry
+PFR-only or ESPN-only child sources (combine, qbr, depth_charts_daily) carry
 only their native ID and have `player_gsis_id IS NULL`. A PK constraint
 rejects those rows at INSERT.
 
@@ -87,7 +87,7 @@ pandas-side approach is actually cleaner code.
 
 **Rule:** Every child table that references a player carries
 `player_gsis_id` — even if the raw source is PFR-only (combine, snap_counts,
-pfr_advanced) or ESPN-only (qbr, depth_charts_2025). The ID is populated
+pfr_advanced) or ESPN-only (qbr, depth_charts_daily). The ID is populated
 via `id_backfill` after child load (Phase 5).
 
 **Why:** LLM-written SQL ergonomics. A query like "top rushers by snap

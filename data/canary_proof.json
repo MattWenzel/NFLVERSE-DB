@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-24T18:29:12.260409+00:00",
+  "generated_at": "2026-06-12T21:53:48.368234+00:00",
   "db_path": "/home/mattw813/Documents/NFLVERSE/data/nflverse.duckdb",
   "queries": {
     "Q1": {
@@ -47,9 +47,9 @@
       ],
       "sample": [
         {
-          "display_name": "Zaire Franklin",
+          "display_name": "E.J. Speed",
           "defense_snaps": 90.0,
-          "tackles": 94
+          "tackles": 93
         },
         {
           "display_name": "Alex Anzalone",
@@ -57,9 +57,9 @@
           "tackles": 43
         },
         {
-          "display_name": "E.J. Speed",
+          "display_name": "Zaire Franklin",
           "defense_snaps": 90.0,
-          "tackles": 93
+          "tackles": 94
         }
       ],
       "status": "ok"
@@ -170,11 +170,11 @@
           "weeks_on_report": 13
         },
         {
-          "display_name": "Jaire Alexander",
+          "display_name": "Vederian Lowe",
           "weeks_on_report": 12
         },
         {
-          "display_name": "Vederian Lowe",
+          "display_name": "Jaire Alexander",
           "weeks_on_report": 12
         }
       ],
@@ -488,6 +488,91 @@
       ],
       "status": "ok"
     },
+    "Q20": {
+      "description": "2026 Round 1 draft picks resolve in the hub (tests offseason draft-class load)",
+      "row_count": 10,
+      "columns": [
+        "pick",
+        "team",
+        "pfr_player_name",
+        "position",
+        "display_name"
+      ],
+      "sample": [
+        {
+          "pick": 1,
+          "team": "LVR",
+          "pfr_player_name": "Fernando Mendoza",
+          "position": "QB",
+          "display_name": "Fernando Mendoza"
+        },
+        {
+          "pick": 2,
+          "team": "NYJ",
+          "pfr_player_name": "David Bailey",
+          "position": "OLB",
+          "display_name": null
+        },
+        {
+          "pick": 3,
+          "team": "ARI",
+          "pfr_player_name": "Jeremiyah Love",
+          "position": "RB",
+          "display_name": null
+        }
+      ],
+      "status": "ok"
+    },
+    "Q21": {
+      "description": "v_depth_charts covers both daily-era seasons (tests depth_charts_daily year partitioning)",
+      "row_count": 2,
+      "columns": [
+        "season",
+        "n"
+      ],
+      "sample": [
+        {
+          "season": 2025,
+          "n": 554215
+        },
+        {
+          "season": 2026,
+          "n": 233125
+        }
+      ],
+      "status": "ok"
+    },
+    "Q22": {
+      "description": "QBR joined to games via canonical game_id (tests qbr_game_id_from_games fill)",
+      "row_count": 5,
+      "columns": [
+        "display_name",
+        "qbr_total",
+        "week",
+        "final"
+      ],
+      "sample": [
+        {
+          "display_name": "Lamar Jackson",
+          "qbr_total": 99.8,
+          "week": 17,
+          "final": "HOU 2.0-31.0 BAL"
+        },
+        {
+          "display_name": "Kyler Murray",
+          "qbr_total": 98.0,
+          "week": 2,
+          "final": "ARI 41.0-10.0 LA"
+        },
+        {
+          "display_name": "Josh Allen",
+          "qbr_total": 97.9,
+          "week": 3,
+          "final": "BUF 47.0-10.0 JAX"
+        }
+      ],
+      "status": "ok"
+    },
     "Q15": {
       "description": "FK orphan sweep across all declared FKs (integrity invariant)",
       "row_count": 1,
@@ -496,7 +581,7 @@
       ],
       "sample": [
         {
-          "fk_count": 79
+          "fk_count": 81
         }
       ],
       "status": "ok"

@@ -116,9 +116,9 @@ def v_draft_pick_careers_sql() -> str:
 def v_depth_charts_sql() -> str:
     """Composite view across the two depth-chart schemas.
 
-    Pre-2025 rows come from `depth_charts`; 2025+ rows from `depth_charts_2025`
-    with derived `season` (NFL calendar: Jan-Feb belong to prior year) and
-    `week` (looked up from `games` by gameday ≤ depth chart date). The 2025
+    Pre-2025 rows come from `depth_charts`; 2025+ rows from `depth_charts_daily`
+    with `season` stamped from the upstream per-season file and `week`
+    looked up from `games` by gameday ≤ depth chart date. The daily
     `pos_abb` values (LCB/RCB/WLB/…) are mapped to legacy-comparable generic
     positions (CB/OLB/…) so `WHERE position='CB'` works across both eras.
     """
@@ -139,17 +139,9 @@ def v_depth_charts_sql() -> str:
         FROM depth_charts
         UNION ALL
         SELECT
-            CASE
-                WHEN EXTRACT(MONTH FROM CAST(dc.dt AS TIMESTAMP)) <= 2
-                    THEN CAST(strftime(CAST(dc.dt AS TIMESTAMP), '%Y') AS INTEGER) - 1
-                ELSE CAST(strftime(CAST(dc.dt AS TIMESTAMP), '%Y') AS INTEGER)
-            END                                       AS season,
+            dc.season,
             (SELECT g.week FROM games g
-             WHERE g.season = CASE
-                        WHEN EXTRACT(MONTH FROM CAST(dc.dt AS TIMESTAMP)) <= 2
-                            THEN CAST(strftime(CAST(dc.dt AS TIMESTAMP), '%Y') AS INTEGER) - 1
-                        ELSE CAST(strftime(CAST(dc.dt AS TIMESTAMP), '%Y') AS INTEGER)
-                    END
+             WHERE g.season = dc.season
                AND CAST(g.gameday AS DATE) <= CAST(dc.dt AS DATE)
              ORDER BY CAST(g.gameday AS DATE) DESC
              LIMIT 1)::INTEGER                        AS week,
@@ -178,5 +170,5 @@ def v_depth_charts_sql() -> str:
             END                                       AS formation,
             dc.pos_grp,
             'v2025'                                   AS source
-        FROM depth_charts_2025 dc
+        FROM depth_charts_daily dc
     """

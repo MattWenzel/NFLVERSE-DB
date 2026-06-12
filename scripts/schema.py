@@ -121,6 +121,11 @@ SOURCES: dict = {
             "gametime": "VARCHAR", "gameday": "VARCHAR",
             "weekday": "VARCHAR", "time_of_day": "VARCHAR", "start_time": "VARCHAR",
         },
+        # Unscheduled future games (flex-window weeks) ship with provisional
+        # old_game_ids that collide; games declares old_game_id UNIQUE, so
+        # null the colliding placeholders (they're re-issued once the NFL
+        # finalizes the slate).
+        "null_duplicate_values": ["old_game_id"],
     },
 
     # -------- nflverse_releases: snap_counts --------
@@ -150,10 +155,16 @@ SOURCES: dict = {
         "renames": {"gsis_id": "player_gsis_id"},
         "id_cleanup": {"player_gsis_id": "gsis"},
     },
-    "depth_charts_2025": {
-        # 2025+ schema (daily, GSIS+ESPN keyed, granular pos_abb)
+    "depth_charts_daily": {
+        # 2025+ schema (daily, GSIS+ESPN keyed, granular pos_abb).
+        # Year-partitioned: upstream publishes depth_charts_{year}.parquet
+        # per season in the new schema starting 2025.
         "release_tag": "depth_charts",
-        "pattern": "depth_charts/depth_charts_2025.parquet",
+        "pattern": "depth_charts/depth_charts_{year}.parquet",
+        "year_range": (2025, "auto"),
+        # Daily rows carry only a `dt` date; stamp the file's season so the
+        # table is season-queryable and incremental --years rebuilds work.
+        "stamp_year_column": "season",
         "renames": {"gsis_id": "player_gsis_id", "espn_id": "player_espn_id"},
         "id_cleanup": {"player_gsis_id": "gsis", "player_espn_id": "generic"},
     },
@@ -375,12 +386,13 @@ SOURCES: dict = {
     "qbr_week": {
         "release_tag": "espn_data",
         "pattern": "espn_data/qbr_week_level.parquet",
-        # Keep native `game_id` column name (v1 consumer-compat). Values are
-        # ESPN's numeric format (e.g. '260910009'), NOT our nflverse
-        # `game_id` namespace — so NO FK to games.game_id. Documented in the
-        # DATABASE.md schema notes as an ESPN-namespace column.
-        "renames": {"player_id": "player_espn_id"},
-        "id_cleanup": {"player_espn_id": "generic", "game_id": "generic"},
+        # Upstream `game_id` is ESPN's numeric format (e.g. '260910009') —
+        # keep it as espn_game_id, and add an empty canonical game_id that
+        # the qbr_game_id_from_games fill rule populates via games.espn
+        # (the schedules feed carries every alt-namespace game id).
+        "renames": {"player_id": "player_espn_id", "game_id": "espn_game_id"},
+        "id_cleanup": {"player_espn_id": "generic", "espn_game_id": "generic"},
+        "ensure_columns": {"game_id": "VARCHAR"},
     },
     "qbr_season": {
         "release_tag": "espn_data",
@@ -563,7 +575,7 @@ HUB_BUILD: dict = {
                 "combine", "draft_picks", "snap_counts",
                 "pfr_advanced_season_pass", "pfr_advanced_season_rush",
                 "pfr_advanced_season_rec",  "pfr_advanced_season_def",
-                "qbr_week", "depth_charts_2025",
+                "qbr_week", "depth_charts_daily",
             ],
             "match_columns": ("display_name", "position"),
             "safety": "reject_on_position_conflict",
@@ -578,7 +590,7 @@ HUB_BUILD: dict = {
                 "combine", "draft_picks", "snap_counts",
                 "pfr_advanced_season_pass", "pfr_advanced_season_rush",
                 "pfr_advanced_season_rec",  "pfr_advanced_season_def",
-                "qbr_week", "depth_charts_2025",
+                "qbr_week", "depth_charts_daily",
             ],
         },
     ],
@@ -633,9 +645,11 @@ TABLES: dict = {
     "games": {
         "source_id": "schedules",
         "primary_key": "game_id",
-        # old_game_id is the NFL-internal YYYYMMDDGG format; 100% populated,
-        # globally unique, and is how officials.game_id references into games.
-        # Declare UNIQUE so officials can FK to it.
+        # old_game_id is the NFL-internal YYYYMMDDGG format and is how
+        # officials.game_id references into games. Unique for all played
+        # games; provisional duplicates on unscheduled future games are
+        # nulled at load (see schedules.null_duplicate_values). Declare
+        # UNIQUE so officials can FK to it.
         "unique_columns": ["old_game_id"],
         "foreign_keys": [
             # Starting QBs per game (unwired in v1/v2; fully populated from
@@ -770,8 +784,8 @@ TABLES: dict = {
         },
     },
 
-    "depth_charts_2025": {
-        "source_id": "depth_charts_2025",
+    "depth_charts_daily": {
+        "source_id": "depth_charts_daily",
         "foreign_keys": [
             {"column": "player_gsis_id", "references": "players.player_gsis_id"},
             {"column": "player_espn_id", "references": "players.player_espn_id"},
@@ -906,10 +920,12 @@ TABLES: dict = {
     "qbr": {
         # Source swapped from espnscrapeR CSV (stopped at 2023) to nflverse
         # espn_data/qbr_week_level.parquet (covers 2024-2025, 21 more QBs).
-        # espn_game_id stays as a non-FK column (ESPN's numeric ID, not ours).
+        # espn_game_id keeps ESPN's numeric ID; canonical game_id is filled
+        # from games.espn post-load (qbr_game_id_from_games fill rule).
         "source_id": "qbr_week",
         "foreign_keys": [
             {"column": "player_espn_id", "references": "players.player_espn_id"},
+            {"column": "game_id", "references": "games.game_id"},
         ],
         "id_backfill": [
             {
@@ -1013,11 +1029,13 @@ TABLES: dict = {
     },
 
     "team_game_stats": {
-        # NEW in v2. Team-level weekly aggregates. The source parquet doesn't
-        # carry a game_id column — join via (season, week, team) against games
-        # when you need cross-table joins.
+        # NEW in v2. Team-level weekly aggregates. Upstream populates game_id
+        # only from ~2022 on; the team_game_stats_game_id_from_games fill
+        # rule recovers the rest (~99.5%) from games.
         "source_id": "stats_team_week",
-        "foreign_keys": [],
+        "foreign_keys": [
+            {"column": "game_id", "references": "games.game_id"},
+        ],
         "indexes": [("team", "season")],
     },
 
@@ -1162,9 +1180,11 @@ FILL_RULES: list = [
 
     # --- game_stats.game_id derivation from games lookup (v3 audit finding) ---
     # Pre-2022 game_stats files don't carry game_id. 364,760 NULL rows can be
-    # recovered via (season, week, team, opponent_team) → games join. Fills
-    # game_stats.game_id from 12% → ~88%+ (only rows without a matching games
-    # entry stay NULL, which is data reality — upstream mismatch).
+    # recovered via (season, week, team/opponent) → games join. Older rows mix
+    # era team codes with modern franchise codes in the same row (team=OAK,
+    # opponent=LV), so require only ONE of the two codes to appear on either
+    # side of a game, guarded by HAVING COUNT(*)=1 so an ambiguous week never
+    # fills a wrong game_id. Measured: 89% → ~99.5% coverage.
     {
         "name": "game_stats_game_id_from_games",
         "target_table": "game_stats",
@@ -1172,10 +1192,48 @@ FILL_RULES: list = [
         "target_column": "game_id",
         "source_table": "games",
         "source_expression": (
-            "(SELECT g.game_id FROM games g "
+            "(SELECT MIN(g.game_id) FROM games g "
             "WHERE g.season = game_stats.season AND g.week = game_stats.week "
-            "AND ((g.home_team = game_stats.team AND g.away_team = game_stats.opponent_team) "
-            "OR (g.away_team = game_stats.team AND g.home_team = game_stats.opponent_team)) "
+            "AND (g.home_team IN (game_stats.team, game_stats.opponent_team) "
+            "OR g.away_team IN (game_stats.team, game_stats.opponent_team)) "
+            "HAVING COUNT(*) = 1)"
+        ),
+    },
+
+    # --- team_game_stats.game_id from games (same strategy as game_stats) ---
+    # Upstream populates game_id only from ~2022 on (12% overall). Measured:
+    # 12% → ~99.5% coverage with the same either-code + unique-game guard.
+    {
+        "name": "team_game_stats_game_id_from_games",
+        "target_table": "team_game_stats",
+        "op": "backfill_null",
+        "target_column": "game_id",
+        "source_table": "games",
+        "source_expression": (
+            "(SELECT MIN(g.game_id) FROM games g "
+            "WHERE g.season = team_game_stats.season AND g.week = team_game_stats.week "
+            "AND (g.home_team IN (team_game_stats.team, team_game_stats.opponent_team) "
+            "OR g.away_team IN (team_game_stats.team, team_game_stats.opponent_team)) "
+            "HAVING COUNT(*) = 1)"
+        ),
+    },
+
+    # --- qbr.game_id (canonical) from games via the ESPN game-id bridge ---
+    # qbr's upstream game id is ESPN-namespaced (kept as espn_game_id);
+    # games.espn carries the same namespace for 96% of games. A handful of
+    # 2003-2010 espn ids are duplicated upstream, so prefer the game whose
+    # home/away matches qbr.team_abb (ESPN codes WSH/LAR fall back to the
+    # unique-espn match). Measured: 10,705/10,709 rows resolve.
+    {
+        "name": "qbr_game_id_from_games",
+        "target_table": "qbr",
+        "op": "backfill_null",
+        "target_column": "game_id",
+        "source_table": "games",
+        "source_expression": (
+            "(SELECT g.game_id FROM games g "
+            "WHERE g.espn = qbr.espn_game_id "
+            "ORDER BY (g.home_team = qbr.team_abb OR g.away_team = qbr.team_abb) DESC "
             "LIMIT 1)"
         ),
     },
@@ -1331,12 +1389,12 @@ FILL_RULES: list = [
 # ===========================================================================
 VIEWS: dict = {
     "v_depth_charts": {
-        # Composite: UNION of depth_charts (2001-2024) + depth_charts_2025 with
+        # Composite: UNION of depth_charts (2001-2024) + depth_charts_daily with
         # normalized column set. Same semantics as v1 (NFL-calendar-adjusted
-        # season, games-lookup week for 2025, pos_abb-to-position mapping).
+        # season, games-lookup week for 2025+, pos_abb-to-position mapping).
         # Definition lives in scripts/views.py because the SQL is substantial.
         "defined_in": "scripts/views.py::v_depth_charts_sql",
-        "requires_tables": ["depth_charts", "depth_charts_2025", "games"],
+        "requires_tables": ["depth_charts", "depth_charts_daily", "games"],
     },
 }
 
@@ -1364,7 +1422,7 @@ LOAD_ORDER: list = [
     "draft_picks",
     "snap_counts",
     "depth_charts",
-    "depth_charts_2025",
+    "depth_charts_daily",
     "pfr_advanced",
     "ngs_stats",
     "qbr",
@@ -1408,8 +1466,6 @@ SKIPPED_SOURCES: dict[str, str] = {
     "stats_player_regpost":          "Union of reg+post; redundant with both loaded",
     "stats_team_regpost":            "Union of reg+post; redundant with both loaded",
     "roster":                        "Annual rosters 1920-; pre-modern era, no stat-table joins",
-    "teams_colors_logos":            "Display-only metadata; low LLM-query value",
-    "trades":                        "Trade history; low LLM-query value (no player FK)",
     "pfr_rosters":                   "In 'misc' release; superseded by weekly_rosters",
     "pbp_participation_old":         "Pre-2023 legacy format; superseded by pbp_participation",
     "qbr_season_level":              "We load qbr_week_level and aggregate as needed",
@@ -1506,9 +1562,9 @@ def validate_config(manifest: dict | None = None) -> list[str]:
                 errors.append(f"source {sid!r}: release_tag {tag!r} not in manifest")
                 continue
             # Check the pattern — strip the subfolder prefix if present.
-            # The config may reference a specific year (e.g. depth_charts_2025.parquet
-            # for the schema-changed 2025+ file) that matches a general manifest
-            # pattern (depth_charts_{year}.parquet). Accept either.
+            # The config may reference a specific year (e.g. a pinned
+            # single-year file) that matches a general manifest pattern
+            # (depth_charts_{year}.parquet). Accept either.
             import re as _re
             pattern = s["pattern"]
             pattern_file = pattern.rsplit("/", 1)[-1]

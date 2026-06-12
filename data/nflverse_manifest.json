@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-23T23:24:08.150501+00:00",
+  "generated_at": "2026-06-12T21:23:59.143364+00:00",
   "source_repo": "nflverse/nflverse-data",
   "probe_columns": true,
   "nflverse_releases": {
@@ -14,7 +14,7 @@
           "columns": [
             {
               "name": "trade_id",
-              "type": "DOUBLE",
+              "type": "INTEGER",
               "is_id": false,
               "id_kind": null
             },
@@ -44,25 +44,25 @@
             },
             {
               "name": "pick_season",
-              "type": "DOUBLE",
+              "type": "INTEGER",
               "is_id": false,
               "id_kind": null
             },
             {
               "name": "pick_round",
-              "type": "DOUBLE",
+              "type": "INTEGER",
               "is_id": false,
               "id_kind": null
             },
             {
               "name": "pick_number",
-              "type": "DOUBLE",
+              "type": "INTEGER",
               "is_id": false,
               "id_kind": null
             },
             {
               "name": "conditional",
-              "type": "DOUBLE",
+              "type": "INTEGER",
               "is_id": false,
               "id_kind": null
             },
@@ -79,7 +79,7 @@
               "id_kind": null
             }
           ],
-          "sample_row_count": 4847,
+          "sample_row_count": 4975,
           "id_columns": {
             "pfr_id": "pfr"
           },
@@ -6568,7 +6568,7 @@
           "pattern": "roster_weekly_{year}.parquet",
           "year_span": [
             2002,
-            2025
+            2026
           ],
           "years": [
             2002,
@@ -6594,9 +6594,10 @@
             2022,
             2023,
             2024,
-            2025
+            2025,
+            2026
           ],
-          "file_count": 24,
+          "file_count": 25,
           "columns": [
             {
               "name": "season",
@@ -6815,7 +6816,7 @@
               "id_kind": null
             }
           ],
-          "sample_row_count": 46849,
+          "sample_row_count": 2930,
           "id_columns": {
             "gsis_id": "gsis",
             "espn_id": "espn",
@@ -6875,7 +6876,7 @@
               "id_kind": "pff"
             }
           ],
-          "sample_row_count": 13074,
+          "sample_row_count": 13775,
           "id_columns": {
             "otc_id": "otc",
             "gsis_id": "gsis",
@@ -8322,7 +8323,7 @@
               "id_kind": null
             }
           ],
-          "sample_row_count": 50817,
+          "sample_row_count": 51633,
           "id_columns": {
             "otc_id": "otc",
             "gsis_id": "gsis"
@@ -8802,7 +8803,7 @@
               "id_kind": null
             }
           ],
-          "sample_row_count": 3137,
+          "sample_row_count": 2930,
           "id_columns": {
             "gsis_id": "gsis",
             "espn_id": "espn",

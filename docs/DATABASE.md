@@ -1,6 +1,6 @@
 # nflverse Database Documentation
 
-Comprehensive NFL data built from [nflverse](https://github.com/nflverse) into a single DuckDB file. 27 tables, 3 views, 79 foreign keys, covering 1999–2025.
+Comprehensive NFL data built from [nflverse](https://github.com/nflverse) into a single DuckDB file. 27 tables, 3 views, 81 foreign keys, covering 1999–2026.
 
 > **Design context:** [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md) is the authoritative list of rules + why they exist. [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md) is the field guide of upstream-data reality. [`scripts/schema.py`](../scripts/schema.py) is the authoritative declarative shape — every SOURCE, TABLE, FK, FILL_RULE.
 
@@ -8,34 +8,34 @@ Comprehensive NFL data built from [nflverse](https://github.com/nflverse) into a
 
 | Database | Size | Tables | Total Rows | Years |
 |---|---|---|---|---|
-| `nflverse.duckdb` | ~1.3 GB | 27 | ~6.2M | 1999-2025 |
-| `nflverse.sqlite` (optional) | ~3.3 GB | 27 | ~6.2M | 1999-2025 |
+| `nflverse.duckdb` | ~1.4 GB | 27 | ~6.1M | 1999-2026 |
+| `nflverse.sqlite` (optional) | ~3.4 GB | 27 | ~6.1M | 1999-2026 |
 
-Both carry the same schema, 79 foreign keys, same indexes, and the 3 views (`v_depth_charts`, `v_player_careers`, `v_draft_pick_careers`). Build DuckDB with `python3 scripts/build.py`; mirror to SQLite with `python3 scripts/build_sqlite.py`. **SQLite consumers: run `PRAGMA foreign_keys = ON`** after connecting (SQLite's default is off).
+Both carry the same schema, 81 foreign keys, same indexes, and the 3 views (`v_depth_charts`, `v_player_careers`, `v_draft_pick_careers`). Build DuckDB with `python3 scripts/build.py`; mirror to SQLite with `python3 scripts/build_sqlite.py`. **SQLite consumers: run `PRAGMA foreign_keys = ON`** after connecting (SQLite's default is off).
 
 ### Table Row Counts
 
 | Table | Rows | Purpose |
 |-------|------|---------|
-| **players** | 26,753 | Master player registry (all positions) |
-| **player_ids** | 7,703 | Cross-platform ID bridge (ESPN/Yahoo/PFR/Sleeper/etc.) |
-| **games** | 7,276 | Schedule, scores, weather, betting, QB IDs, stadium_id |
+| **players** | 28,153 | Master player registry (all positions) |
+| **player_ids** | 7,706 | Cross-platform ID bridge (ESPN/Yahoo/PFR/Sleeper/etc.) |
+| **games** | 7,548 | Schedule, scores, weather, betting, QB IDs, stadium_id |
 | **stadiums** | 62 | Reference table (derived) — latest name, roof, surface, location |
 | **teams** | 36 | Team-abbr metadata — conference/division/colors/logos/nickname |
-| **trades** | 4,847 | Player/pick trade history (1999+) |
-| **weekly_rosters** | 906,378 | Week-level roster snapshots w/ full cross-ID set (2002+) |
-| **combine** | 8,649 | NFL Scouting Combine results + draft info |
-| **draft_picks** | 12,670 | NFL Draft history + career outcomes |
+| **trades** | 4,975 | Player/pick trade history (1999+) |
+| **weekly_rosters** | 909,308 | Week-level roster snapshots w/ full cross-ID set (2002+) |
+| **combine** | 8,968 | NFL Scouting Combine results + draft info |
+| **draft_picks** | 12,927 | NFL Draft history + career outcomes |
 | **snap_counts** | 324,611 | Weekly snap participation (2012+) |
 | **depth_charts** | 869,185 | Weekly depth charts (2001-2024, legacy schema) |
-| **depth_charts_2025** | 476,501 | Daily depth charts (2025+, new schema) |
+| **depth_charts_daily** | 787,340 | Daily depth charts (2025+, new schema) |
 | **pfr_advanced** | 15,335 | PFR season advanced stats, pass/rush/rec/def (2018+) |
 | **pfr_advanced_weekly** | 121,954 | PFR week-level advanced stats (2018+) |
-| **ngs_stats** | 26,656 | Next Gen Stats, passing/rushing/receiving (2016+) |
-| **qbr** | 10,709 | ESPN Total QBR (2006+); `game_id` is ESPN-namespace |
+| **ngs_stats** | 26,723 | Next Gen Stats, passing/rushing/receiving (2016+) |
+| **qbr** | 10,709 | ESPN Total QBR (2006+); canonical `game_id` + `espn_game_id` |
 | **injuries** | 90,752 | Weekly injury reports (2009+) |
-| **contracts** | 50,817 | Historical contracts + salary terms |
-| **contracts_cap_breakdown** | 302,242 | Year-by-year cap breakdown (derived; flattens contracts.cols) |
+| **contracts** | 51,633 | Historical contracts + salary terms |
+| **contracts_cap_breakdown** | 303,491 | Year-by-year cap breakdown (derived; flattens contracts.cols) |
 | **officials** | 21,900 | Referee crews per game; `old_game_id` joins to games |
 | **game_stats** | 476,155 | Weekly player stats (all positions, ~115 cols) |
 | **season_stats** | 61,588 | Season-level (REG + POST, 113 cols) |
@@ -49,7 +49,7 @@ Both carry the same schema, 79 foreign keys, same indexes, and the 3 views (`v_d
 
 | View | Source | Purpose |
 |------|--------|---------|
-| **`v_depth_charts`** | `depth_charts` + `depth_charts_2025` | Cross-schema composite — query depth charts across the 2025 schema change with a single column set (`season`, `week`, `team`, `position`, `pos_abb`, `depth_rank`, `formation`, …). |
+| **`v_depth_charts`** | `depth_charts` + `depth_charts_daily` | Cross-schema composite — query depth charts across the 2025 schema change with a single column set (`season`, `week`, `team`, `position`, `pos_abb`, `depth_rank`, `formation`, …). |
 | **`v_player_careers`** | `season_stats` grouped by `player_gsis_id` | Career rollups (REG + separate POST totals): games, seasons, passing/rushing/receiving yards+TDs+ints, key defensive totals, fantasy points. One row per player. |
 | **`v_draft_pick_careers`** | `draft_picks` LEFT JOIN `v_player_careers` | Every draft pick 1936+ with the player's career totals attached. Answers "what did this pick become" in one query. NULL career fields = pre-stat-era or undrafted. |
 
@@ -114,7 +114,7 @@ Both carry the same schema, 79 foreign keys, same indexes, and the 3 views (`v_d
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                           PLAY_BY_PLAY                                  │
 │     game_id + play_id | 372 columns | EPA/WPA/CPOE | Player IDs (GSIS) │
-│     1.28M plays (1999-2025) — same database as everything above        │
+│     1.28M plays (1999-2025; 2026 PBP lands when the season starts) — same database as everything above        │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -135,7 +135,7 @@ Player-level tables use a standardized naming convention. The column name tells 
 Most joins to player bio data are one-hop direct:
 
 ```sql
--- game_stats/season_stats/depth_charts/depth_charts_2025/ngs_stats/draft_picks to players
+-- game_stats/season_stats/depth_charts/depth_charts_daily/ngs_stats/draft_picks to players
 SELECT p.display_name, g.passing_yards
 FROM game_stats g
 JOIN players p ON g.player_gsis_id = p.player_gsis_id;
@@ -154,7 +154,7 @@ The `player_ids` table carries every ID system (GSIS, PFR, ESPN, Yahoo, Sleeper,
 | `season_stats` | `player_gsis_id` | `players.player_gsis_id` |
 | `ngs_stats` | `player_gsis_id` | `players.player_gsis_id` |
 | `depth_charts` | `player_gsis_id` | `players.player_gsis_id` |
-| `depth_charts_2025` | `player_gsis_id` | `players.player_gsis_id` |
+| `depth_charts_daily` | `player_gsis_id` | `players.player_gsis_id` |
 | `draft_picks` | `player_gsis_id` + `player_pfr_id` | either key |
 | `combine` | `player_pfr_id` | via `player_ids.pfr_id` → `gsis_id` |
 | `snap_counts` | `player_pfr_id` | via `player_ids.pfr_id` → `gsis_id` |
@@ -188,7 +188,7 @@ WHERE q.season = 2023;
 
 Master registry of all NFL players with biographical and career information.
 
-**Rows:** 24,992 | **Years:** 1999-2025 | **Columns:** 39
+**Rows:** 28,153 | **Years:** 1999-2025 | **Columns:** 39
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -254,7 +254,7 @@ draft_year: 2017, draft_round: 1, draft_pick: 10
 
 Cross-reference table mapping GSIS IDs to 20+ other platforms.
 
-**Rows:** 7,705 | **Columns:** 35
+**Rows:** 7,706 | **Columns:** 35
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -310,7 +310,7 @@ sportradar_id: 11cad59d-90dd-449c-a839-dddaba4fe16c
 
 NFL game schedule with scores, venue, weather, betting, and starting QB information.
 
-**Rows:** 7,276 | **Years:** 1999-2025 | **Columns:** 46
+**Rows:** 7,548 | **Years:** 1999-2026 | **Columns:** 46
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -369,7 +369,7 @@ Weekly player statistics. **This is the main stats table.**
 
 Contains ALL stat columns for ALL position groups — offensive, defensive, kicking, special teams, penalties, returns, and fumble recovery. RBs can have passing stats (trick plays), defensive players have tackle/sack/INT columns, kickers have full FG/PAT breakdowns, etc.
 
-**Rows:** 475,626 | **Years:** 1999-2025 | **Columns:** 115
+**Rows:** 476,155 | **Years:** 1999-2025 | **Columns:** 115
 
 #### Identification (11 columns)
 
@@ -556,7 +556,7 @@ Contains ALL stat columns for ALL position groups — offensive, defensive, kick
 
 Aggregated season totals. Same stat columns as `game_stats` but summed across all weeks, minus `week`, `opponent_team`, and `game_id`, plus `recent_team` and `games`.
 
-**Rows:** 49,489 | **Years:** 1999-2025 | **Columns:** 113
+**Rows:** 61,588 | **Years:** 1999-2025 | **Columns:** 113
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -589,7 +589,7 @@ Aggregated season totals. Same stat columns as `game_stats` but summed across al
 
 Historical NFL draft data with career statistics and accolades.
 
-**Rows:** 12,670 | **Years:** 1980-2025 | **Columns:** 36
+**Rows:** 12,927 | **Years:** 1980-2026 | **Columns:** 36
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -636,7 +636,7 @@ Historical NFL draft data with career statistics and accolades.
 
 NFL Scouting Combine results with draft information.
 
-**Rows:** 8,649 | **Years:** 2000-2025 | **Columns:** 18
+**Rows:** 8,968 | **Years:** 2000-2026 | **Columns:** 18
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -669,7 +669,7 @@ These tables provide advanced analytics from specialized data sources. Each uses
 
 Weekly snap participation by phase (offense, defense, special teams).
 
-**Rows:** 276,948 | **Years:** 2015-2025 | **ID:** PFR ID (`pfr_player_id`) | **Columns:** 16
+**Rows:** 324,611 | **Years:** 2013-2025 | **ID:** PFR ID (`pfr_player_id`) | **Columns:** 16
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -696,7 +696,7 @@ Weekly snap participation by phase (offense, defense, special teams).
 
 NFL Next Gen Stats advanced metrics. Contains three stat types with different columns populated.
 
-**Rows:** 26,656 | **Years:** 2016-2025 | **ID:** GSIS ID (`player_gsis_id`) | **Columns:** 52
+**Rows:** 26,723 | **Years:** 2016-2025 | **ID:** GSIS ID (`player_gsis_id`) | **Columns:** 52
 
 **Stat Types:** `passing`, `rushing`, `receiving`
 
@@ -800,11 +800,11 @@ Weekly depth chart positions for all teams (historical).
 
 ---
 
-### Table: `depth_charts_2025`
+### Table: `depth_charts_daily`
 
 Daily depth chart positions for 2025+ season. **Different schema from `depth_charts`** — nflverse changed the depth chart format starting in 2025.
 
-**Rows:** 476,501 | **Date range:** 2025-08-03 to 2026-02-13 | **ID:** GSIS ID (`player_gsis_id`) + ESPN ID (`player_espn_id`) | **Columns:** 12
+**Rows:** 787,340 | **Date range:** 2025-08-03 to 2026-02-13 | **ID:** GSIS ID (`player_gsis_id`) + ESPN ID (`player_espn_id`) | **Columns:** 12
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -831,7 +831,7 @@ Daily depth chart positions for 2025+ season. **Different schema from `depth_cha
 
 ### View: `v_depth_charts` (composite across schemas)
 
-nflverse changed the depth-chart model in 2025 — pre-2025 is **weekly** with a coarse 1/2/3 depth and lives in `depth_charts`; 2025+ is **daily** with a 1–15 depth and lives in `depth_charts_2025`. `v_depth_charts` is a DuckDB view that UNIONs both base tables into a single normalized schema, so a single cross-season query covers both sides of the 2025 change.
+nflverse changed the depth-chart model in 2025 — pre-2025 is **weekly** with a coarse 1/2/3 depth and lives in `depth_charts`; 2025+ is **daily** with a 1–15 depth and lives in `depth_charts_daily`. `v_depth_charts` is a DuckDB view that UNIONs both base tables into a single normalized schema, so a single cross-season query covers both sides of the 2025 change.
 
 Where the 2025 data doesn't natively have a column the legacy side does, the view **derives** it:
 
@@ -875,8 +875,8 @@ ORDER BY v.season, v.week, v.source;
 ```
 
 **When to skip the view and query a base table:**
-- Deep-rank queries (depth_rank 4+) → `depth_charts_2025` (only 2025+ has that detail).
-- Point-in-time 2025 data with day precision → `depth_charts_2025` directly for the `dt` column.
+- Deep-rank queries (depth_rank 4+) → `depth_charts_daily` (only 2025+ has that detail).
+- Point-in-time 2025 data with day precision → `depth_charts_daily` directly for the `dt` column.
 - Legacy-era `formation`/`elias_id`/`first_name`/`last_name` detail → `depth_charts` directly.
 - Cross-era composite with normalized columns → this view.
 
@@ -888,7 +888,7 @@ The view is recreated automatically on every build (`pipeline.run` → `create_v
 
 Pro Football Reference advanced statistics. Contains three stat types with different columns.
 
-**Rows:** 7,798 | **Years:** 2018-2025 | **ID:** PFR ID (`player_pfr_id`) | **Columns:** 64
+**Rows:** 15,335 | **Years:** 2018-2025 | **ID:** PFR ID (`player_pfr_id`) | **Columns:** 64
 
 **Stat Types:** `pass`, `rush`, `rec`
 
@@ -984,15 +984,16 @@ Pro Football Reference advanced statistics. Contains three stat types with diffe
 
 ### Table: `qbr`
 
-ESPN Total QBR (Quarterback Rating) data. Weekly rows only — **no season-total rows**; aggregate with `AVG(qbr_total)` grouped by player + season.
+ESPN Total QBR (Quarterback Rating) data. Weekly rows only — **no season-total rows**; aggregate with `AVG(qbr_total)` grouped by player + season. Carries a canonical `game_id` (filled from `games.espn`, FK to games) alongside ESPN's native `espn_game_id`.
 
-**Rows:** 9,570 | **Years:** 2006-2023 | **ID:** ESPN ID (`player_espn_id`) | **Columns:** 30
+**Rows:** 10,709 | **Years:** 2006-2025 | **ID:** ESPN ID (`player_espn_id`) + canonical `game_id` | **Columns:** 32
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `season` | INTEGER | Season year |
 | `season_type` | TEXT | "Regular" or "Postseason" |
-| `game_id` | INTEGER | ESPN game ID |
+| `game_id` | VARCHAR | **Canonical nflverse game id** — FK to `games.game_id` (filled via `games.espn`; 10,705/10,709 rows) |
+| `espn_game_id` | VARCHAR | ESPN's numeric game ID (upstream native) |
 | `game_week` | INTEGER | Week number |
 | `week_text` | TEXT | Week label (e.g., "Week 1" … "Week 18", "Wild Card", "Divisional Round", "Conference Championship", "Super Bowl", "Pro Bowl") |
 | `team_abb` | TEXT | Team abbreviation |
@@ -1168,12 +1169,12 @@ All player-level tables reference `players`; `game_stats` and `play_by_play` add
 | `season_stats` | `player_gsis_id` | `players.player_gsis_id` |
 | `ngs_stats` | `player_gsis_id` | `players.player_gsis_id` |
 | `depth_charts` | `player_gsis_id` | `players.player_gsis_id` |
-| `depth_charts_2025` | `player_gsis_id`, `player_espn_id` | `players.player_gsis_id`, `players.player_espn_id` |
+| `depth_charts_daily` | `player_gsis_id`, `player_espn_id` | `players.player_gsis_id`, `players.player_espn_id` |
 | `draft_picks` | `player_gsis_id`, `player_pfr_id` | `players.player_gsis_id`, `players.player_pfr_id` |
 | `combine` | `player_pfr_id` | `players.player_pfr_id` |
 | `snap_counts` | `player_pfr_id` | `players.player_pfr_id` |
 | `pfr_advanced` | `player_pfr_id` | `players.player_pfr_id` |
-| `qbr` | `player_espn_id` | `players.player_espn_id` |
+| `qbr` | `player_espn_id`, `game_id` | `players.player_espn_id`, `games.game_id` |
 | `play_by_play` | `game_id` + 46 `*_player_id` role columns | `games.game_id` + `players.player_gsis_id` |
 
 ### How the build keeps FKs clean
@@ -1418,7 +1419,7 @@ See [`../README.md`](../README.md) for the full CLI reference and [`DESIGN_RATIO
 - **All position groups**: `game_stats`/`season_stats` include ~115 columns covering every position (offensive, defensive, kicking, special teams).
 - **`season_stats.recent_team`**: Backfilled from `game_stats.team` (most common team per player-season); nflverse source doesn't always populate it.
 - **`game_id` in `game_stats`**: Populated for ~89% of rows post-build. The `game_id_from_games` fill rule derives `game_id` from `games` on `(season, week, team, opponent_team)` for rows where upstream left it NULL. Remaining gap is games for which opponent_team is NULL upstream — filter on `game_id IS NOT NULL` when a hard join is required.
-- **`depth_charts` vs `depth_charts_2025`**: Separate tables due to nflverse schema change in 2025. The 2025+ format uses daily snapshots (`dt` column) instead of weekly, and has a different position structure.
+- **`depth_charts` vs `depth_charts_daily`**: Separate tables due to nflverse schema change in 2025. The 2025+ format uses daily snapshots (`dt` column) instead of weekly, and has a different position structure.
 - **`combine` table**: Has no join edges to other tables — query separately.
 - **NGS `stat_type`**: `passing`, `rushing`, `receiving`; `week=0` = season totals.
 - **PFR `stat_type`**: `pass`, `rush`, `rec` (different naming from NGS!).

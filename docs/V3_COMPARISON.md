@@ -36,7 +36,7 @@ Plus three analytical views: `v_depth_charts`, `v_player_careers`, `v_draft_pick
 |---|---|---|---|
 | combine | 8,649 | 8,649 | +0 |
 | depth_charts | 869,185 | 869,185 | +0 |
-| depth_charts_2025 | 476,501 | 476,501 | +0 |
+| depth_charts_daily | 476,501 | 476,501 | +0 |
 | draft_picks | 12,670 | 12,670 | +0 |
 | game_stats | 476,155 | 476,155 | +0 |
 | games | 7,276 | 7,276 | +0 |

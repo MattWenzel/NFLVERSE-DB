@@ -273,6 +273,53 @@ CANARY = [
         "sample_check": lambda r: r.get("pfr_player_name") == "Aaron Rodgers",
     },
     {
+        "id": "Q20",
+        "description": "2026 Round 1 draft picks resolve in the hub (tests offseason draft-class load)",
+        "sql": """
+            SELECT dp.pick, dp.team, dp.pfr_player_name, dp.position,
+                   p.display_name
+            FROM draft_picks dp
+            LEFT JOIN players p ON dp.player_gsis_id = p.player_gsis_id
+            WHERE dp.season = 2026 AND dp.round = 1
+            ORDER BY dp.pick
+            LIMIT 10
+        """,
+        "expected_min_rows": 10,
+        "expected_columns": ["pick", "team", "pfr_player_name", "position"],
+        "sample_check": lambda r: r.get("pick") == 1,
+    },
+    {
+        "id": "Q21",
+        "description": "v_depth_charts covers both daily-era seasons (tests depth_charts_daily year partitioning)",
+        "sql": """
+            SELECT season, COUNT(*) AS n
+            FROM v_depth_charts
+            WHERE season >= 2025
+            GROUP BY season
+            ORDER BY season
+        """,
+        "expected_min_rows": 2,
+        "expected_columns": ["season", "n"],
+        "sample_check": lambda r: r.get("season") == 2025 and r.get("n", 0) > 100000,
+    },
+    {
+        "id": "Q22",
+        "description": "QBR joined to games via canonical game_id (tests qbr_game_id_from_games fill)",
+        "sql": """
+            SELECT p.display_name, q.qbr_total, g.week,
+                   g.home_team || ' ' || g.home_score || '-' || g.away_score || ' ' || g.away_team AS final
+            FROM qbr q
+            JOIN games g ON g.game_id = q.game_id
+            JOIN players p ON p.player_gsis_id = q.player_gsis_id
+            WHERE q.season = 2024 AND q.season_type = 'Regular'
+            ORDER BY q.qbr_total DESC
+            LIMIT 5
+        """,
+        "expected_min_rows": 5,
+        "expected_columns": ["display_name", "qbr_total", "week", "final"],
+        "sample_check": lambda r: r.get("qbr_total", 0) > 90,
+    },
+    {
         "id": "Q15",
         "description": "FK orphan sweep across all declared FKs (integrity invariant)",
         "sql": """

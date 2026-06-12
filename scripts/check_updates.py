@@ -66,10 +66,12 @@ def _derive_release_map():
         tables = source_to_tables.get(source_id, [])
         if not tables:
             continue
-        entry = m.setdefault(tag, {"tables": [], "year_partitioned": False, "asset_pattern": None})
+        entry = m.setdefault(tag, {"tables": [], "source_ids": [], "year_partitioned": False, "asset_pattern": None})
         for t in tables:
             if t not in entry["tables"]:
                 entry["tables"].append(t)
+        if source_id not in entry["source_ids"]:
+            entry["source_ids"].append(source_id)
         if "{year}" in pattern:
             entry["year_partitioned"] = True
             if entry["asset_pattern"] is None:
@@ -159,10 +161,14 @@ def get_release_info(tag):
     if data is None:
         return None
 
-    assets = [a["name"] for a in data.get("assets", [])]
+    assets = data.get("assets", [])
+    # Release-level published_at/created_at freeze at release creation;
+    # nflverse republishes data by re-uploading ASSETS into the same release,
+    # so the real freshness signal is the newest asset's updated_at.
+    latest_asset_ts = max((a.get("updated_at") or "" for a in assets), default="")
     return {
-        "updated_at": data.get("published_at", data.get("created_at")),
-        "assets": assets,
+        "updated_at": latest_asset_ts or data.get("published_at") or data.get("created_at"),
+        "assets": [a["name"] for a in assets],
     }
 
 
@@ -371,6 +377,7 @@ def check_updates():
                     results["updated"].append({
                         "release": tag,
                         "tables": cfg["tables"],
+                        "sources": cfg.get("source_ids", []),
                         "remote_updated": remote_ts,
                         "stored_updated": stored_ts,
                     })
@@ -385,6 +392,7 @@ def check_updates():
                 results["updated"].append({
                     "release": tag,
                     "tables": cfg["tables"],
+                    "sources": cfg.get("source_ids", []),
                     "remote_updated": remote_ts,
                     "stored_updated": stored_ts,
                 })
@@ -393,6 +401,7 @@ def check_updates():
                 results["updated"].append({
                     "release": tag,
                     "tables": cfg["tables"],
+                    "sources": cfg.get("source_ids", []),
                     "remote_updated": remote_ts,
                     "stored_updated": None,
                 })
@@ -411,6 +420,7 @@ def check_updates():
             results["updated"].append({
                 "release": name,
                 "tables": src["tables"],
+                "sources": [name],
                 "remote_updated": last_mod,
                 "stored_updated": stored_mod,
             })
@@ -418,6 +428,7 @@ def check_updates():
             results["updated"].append({
                 "release": name,
                 "tables": src["tables"],
+                "sources": [name],
                 "remote_updated": last_mod,
                 "stored_updated": None,
             })
@@ -475,18 +486,20 @@ def print_report(results):
     new_years = set()
     for item in results["new_data"]:
         new_years.update(item["new_years"])
-    updated_tables = []
+    updated_sources = []
     for item in results["updated"]:
-        updated_tables.extend(item["tables"])
+        for s in item.get("sources", []):
+            if s not in updated_sources:
+                updated_sources.append(s)
 
     suggestions = []
     if new_years:
         years_str = " ".join(str(y) for y in sorted(new_years))
         suggestions.append(f"python3 scripts/download.py --years {years_str}")
         suggestions.append(f"python3 scripts/build.py --years {years_str}")
-    if updated_tables:
-        tables_str = " ".join(updated_tables)
-        suggestions.append(f"python3 scripts/download.py --sources {tables_str} --force")
+    if updated_sources:
+        sources_str = " ".join(updated_sources)
+        suggestions.append(f"python3 scripts/download.py --sources {sources_str} --force")
         suggestions.append("python3 scripts/build.py  # full rebuild recommended after source refresh")
     if not suggestions and (results["new_data"] or results["updated"]):
         suggestions.append("python3 scripts/download.py --all && python3 scripts/build.py")

@@ -6,7 +6,9 @@ by the hub builder.
 
 Operations applied, in order:
   1. Resolve parquet path(s) per year_range
-  2. Read + (for year-partitioned sources) concat via union_by_name
+  2. Read + (for year-partitioned sources) concat via union_by_name;
+     `stamp_year_column` adds the file's year as a column when the rows
+     don't carry one (e.g. daily depth charts)
   3. Apply `renames`
   4. Apply `id_cleanup` (uses scripts/cleanup.py:clean_id)
   5. Apply `force_types` casts (best-effort; skips columns that don't exist)
@@ -22,6 +24,7 @@ operations handled downstream.
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -47,7 +50,9 @@ def _expand_years(source_spec: dict, raw_root: Path) -> list[int] | None:
     filename_pat = pattern.rsplit("/", 1)[-1]
     lo, hi = source_spec.get("year_range", ("auto", "auto"))
     years = []
-    for y in range(1999, 2027):
+    # Upper bound tracks the wall clock (+2 covers next-season files that
+    # nflverse publishes before the calendar year starts).
+    for y in range(1999, datetime.now().year + 2):
         fname = filename_pat.replace("{year}", str(y))
         if (folder / fname).exists():
             if lo != "auto" and y < lo:
@@ -86,11 +91,17 @@ def load_source(source_id: str, source_spec: dict, years: list[int] | None = Non
                 available = [y for y in available if y in years]
             if not available:
                 return pd.DataFrame()
-            files = [RAW_DATA_PATH / pattern.replace("{year}", str(y)) for y in available]
+            stamp_col = source_spec.get("stamp_year_column")
             dfs = []
-            for f in files:
+            for y in available:
+                f = RAW_DATA_PATH / pattern.replace("{year}", str(y))
                 if f.exists():
-                    dfs.append(pd.read_parquet(f))
+                    part = pd.read_parquet(f)
+                    # Stamp the file's year onto sources whose rows don't
+                    # carry a season column (e.g. daily depth charts).
+                    if stamp_col and stamp_col not in part.columns:
+                        part[stamp_col] = y
+                    dfs.append(part)
             if not dfs:
                 return pd.DataFrame()
             df = pd.concat(dfs, ignore_index=True)
@@ -143,5 +154,14 @@ def load_source(source_id: str, source_spec: dict, years: list[int] | None = Non
     for col, kind in id_cleanup.items():
         if col in df.columns:
             df[col] = clean_id(df[col], kind=kind)
+
+    # Null out colliding values in columns the target table declares UNIQUE
+    # (e.g. provisional old_game_id placeholders on unscheduled future games).
+    for col in source_spec.get("null_duplicate_values", []):
+        if col in df.columns:
+            dup = df[col].notna() & df[col].duplicated(keep=False)
+            if dup.any():
+                print(f"    {source_id}: nulled {int(dup.sum())} duplicate {col!r} values")
+                df.loc[dup, col] = pd.NA
 
     return df

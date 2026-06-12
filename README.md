@@ -6,15 +6,15 @@ Scripts that turn [nflverse](https://github.com/nflverse/nflverse-data) — the 
 
 nflverse publishes its data as per-season parquet files across ~24 release tags, and the mainstream way to use it (via [`nflreadpy`](https://github.com/nflverse/nflreadpy) or R's [`nflreadr`](https://github.com/nflverse/nflreadr)) loads those files into DataFrames on every call. Great for a one-off analysis; not for repeated cross-table questions. A single DuckDB file fixes that:
 
-- **Ask real questions in SQL.** 27 tables wired together with 79 foreign keys — join `game_stats → players → games → snap_counts` or `play_by_play → ftn_charting → stadiums` in one query.
+- **Ask real questions in SQL.** 27 tables wired together with 81 foreign keys — join `game_stats → players → games → snap_counts` or `play_by_play → ftn_charting → stadiums` in one query.
 - **Offline and fast.** One `.duckdb` file. Columnar storage with zone maps makes aggregates on the 1.28M-row, 372-column `play_by_play` table fly.
 - **Deterministic.** Build once, pin a snapshot, reproduce the same answer tomorrow. Catalog + survey gates prevent upstream drift from sneaking in.
 - **LLM-friendly.** Every player-bearing table carries `player_gsis_id` regardless of the source's native ID; every game-bearing table carries `game_id`. One join pattern across the whole DB.
 
 | Database | Size | Tables | Rows | Years |
 |---|---|---|---|---|
-| `data/nflverse.duckdb` | ~1.25 GB | 27 | ~5.78M | 1999–2025 |
-| `data/nflverse.sqlite` (optional) | ~3.3 GB | 27 | ~5.78M | 1999–2025 |
+| `data/nflverse.duckdb` | ~1.4 GB | 27 | ~6.1M | 1999–2026 |
+| `data/nflverse.sqlite` (optional) | ~3.4 GB | 27 | ~6.1M | 1999–2026 |
 
 ## Quick start
 
@@ -40,7 +40,7 @@ Full build is ~7-15 min depending on play_by_play load speed. Incremental refres
 
 **Parents**: `players`, `player_ids`, `games`, `stadiums`
 
-**Player-linked**: `weekly_rosters`, `combine`, `draft_picks`, `snap_counts`, `depth_charts` (2001-2024), `depth_charts_2025` (2025+ daily), `pfr_advanced`, `ngs_stats`, `qbr`, `injuries`, `contracts`, `contracts_cap_breakdown`
+**Player-linked**: `weekly_rosters`, `combine`, `draft_picks`, `snap_counts`, `depth_charts` (2001-2024), `depth_charts_daily` (2025+ daily, year-partitioned), `pfr_advanced`, `ngs_stats`, `qbr`, `injuries`, `contracts`, `contracts_cap_breakdown`
 
 **Game/team-linked**: `officials`, `team_game_stats`, `team_season_stats`
 
@@ -54,7 +54,7 @@ See [`docs/DATABASE.md`](docs/DATABASE.md) for the full schema and [`docs/DESIGN
 
 ## IDs and joins
 
-Every player-bearing row carries `player_gsis_id` — even on tables whose upstream source is PFR-native (`snap_counts`, `pfr_advanced`, `combine`) or ESPN-native (`qbr`, `depth_charts_2025`). The build backfills canonical IDs from the `players` hub so consumers write one join pattern:
+Every player-bearing row carries `player_gsis_id` — even on tables whose upstream source is PFR-native (`snap_counts`, `pfr_advanced`, `combine`) or ESPN-native (`qbr`, `depth_charts_daily`). The build backfills canonical IDs from the `players` hub so consumers write one join pattern:
 
 ```sql
 SELECT p.display_name, ss.passing_yards
@@ -168,10 +168,10 @@ python3 scripts/build.py --years 2025      # ~60s vs full-rebuild minutes
 ## Notes
 
 - `players.position` / `weekly_rosters.position` use position GROUPS (DB, LB, CB, …); `snap_counts.position` uses fine-grained ROLES (FS, WLB, LCB, …). These are complementary, not conflicting — use whichever granularity fits your query.
-- `qbr.game_id` holds ESPN's numeric game_id (e.g. `260910009`), not nflverse's `2024_01_KC_BUF` format — do NOT join to `games.game_id`. ESPN-namespace join target doesn't exist in our data.
+- `qbr.game_id` is nflverse-canonical (filled from `games.espn` for 10,705/10,709 rows; FK to games). ESPN's native numeric id is preserved as `qbr.espn_game_id`.
 - `officials.old_game_id` matches `games.old_game_id` (NFL's YYYYMMDDGG format) — that's how to join officials to games.
-- `game_stats.game_id` is populated for ~89% of rows post-build (pre-2022 gap closed via the `game_id_from_games` fill rule).
-- `players.otc_id` matches `contracts.otc_id` for 8,731 of 12,152 contracts rows (68%). Not declared as FK because the other 32% are non-players (coaches/retired) — join with LEFT JOIN.
+- `game_stats.game_id` and `team_game_stats.game_id` are populated for ~99.5% of rows post-build (pre-2022 gaps closed via fill rules from `games`; an exactly-one-game guard prevents wrong-game fills on era/modern team-code drift).
+- `players.otc_id` matches `contracts.otc_id` for 44,597 of 51,633 contracts rows (86%). Not declared as FK because the other 32% are non-players (coaches/retired) — join with LEFT JOIN.
 - Pre-GSIS historical players (1950s-1990s) have Elias-format IDs like `VIT276861` as `player_gsis_id`. This is by design — preserved so draft_picks + HoF queries still join.
 
 ## License
@@ -198,13 +198,13 @@ Per CC-BY-4.0 §3(a)(1)(B), these build scripts modify the source data while loa
 - Canonical `player_gsis_id` is backfilled onto every player-bearing table via hub lookup after initial load (see `id_backfill` rules in `scripts/schema.py`).
 - `draft_picks.player_gsis_id` for pre-GSIS era rows is recovered via name-match against `players.display_name` (same-season active filter).
 - `season_stats` includes both REG and POST. A safety-net pass (`compute_missing_season_stats`) aggregates weekly `game_stats` into `season_stats` for any (player, season, type) combo missing from the nflverse pre-aggregated feed.
-- `game_stats.game_id` is derived from `games` on (season, week, team, opponent_team) for rows where upstream didn't populate it.
+- `game_stats.game_id` / `team_game_stats.game_id` are derived from `games` on (season, week, team codes) for rows where upstream didn't populate them; `qbr.game_id` is derived from `games.espn`. Each fill only applies when exactly one game matches.
 - `weekly_rosters.player_pfr_id` / `player_espn_id` are filled from the players hub where the upstream source has them NULL.
 - `contracts.date_of_birth`, `.draft_round`, `.draft_overall` are filled from `players`/`draft_picks` where NULL.
-- Two ID-adjacent columns are namespace-renamed: `officials.game_id → old_game_id` (NFL-internal format, not nflverse canonical); `qbr.game_id` stays but is explicitly ESPN-namespaced (no FK to games).
+- Two ID-adjacent columns are namespace-renamed: `officials.game_id → old_game_id` (NFL-internal format, not nflverse canonical); `qbr.game_id → espn_game_id`, with a canonical `game_id` added and filled from `games.espn` (FK to games).
 - A `stat_type` column is added to `ngs_stats` and `pfr_advanced` to distinguish the sub-types.
 - Two derived reference tables: `stadiums` (62 rows, from `games.stadium_id`), `contracts_cap_breakdown` (302K rows, flattens `contracts.cols` struct array).
-- 79 foreign-key constraints declared at table-creation time; consumers auto-derive the join graph via `duckdb_constraints()`.
+- 81 foreign-key constraints declared at table-creation time; consumers auto-derive the join graph via `duckdb_constraints()`.
 
 Individual numeric stat values from nflverse's feeds are not altered. Derived aggregate rows (season_stats augmentation, contracts cap breakdown) are computed from their upstream sources.
 
