@@ -320,6 +320,25 @@ CANARY = [
         "sample_check": lambda r: r.get("qbr_total", 0) > 90,
     },
     {
+        "id": "Q23",
+        "description": "season_stats equals SUM(game_stats) for 2024 (cross-table consistency invariant)",
+        "sql": """
+            WITH b AS (
+              SELECT player_gsis_id, season, season_type,
+                     SUM(passing_yards) AS py, SUM(rushing_yards) AS ry,
+                     SUM(receiving_yards) AS recy
+              FROM game_stats WHERE season = 2024 GROUP BY 1,2,3)
+            SELECT COUNT(*) AS mismatches
+            FROM season_stats s JOIN b USING (player_gsis_id, season, season_type)
+            WHERE COALESCE(s.passing_yards,0)   <> COALESCE(b.py,0)
+               OR COALESCE(s.rushing_yards,0)   <> COALESCE(b.ry,0)
+               OR COALESCE(s.receiving_yards,0) <> COALESCE(b.recy,0)
+        """,
+        "expected_min_rows": 1,
+        "expected_columns": ["mismatches"],
+        "sample_check": lambda r: r.get("mismatches") == 0,
+    },
+    {
         "id": "Q15",
         "description": "FK orphan sweep across all declared FKs (integrity invariant)",
         "sql": """

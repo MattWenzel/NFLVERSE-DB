@@ -151,6 +151,7 @@ python3 scripts/build.py --years 2025      # ~60s vs full-rebuild minutes
 | `scripts/views.py` | `v_depth_charts` SQL |
 | `scripts/survey.py` | Pre-build ID-space + coverage gate |
 | `scripts/canary_queries.py` | Committed LLM-style query regression suite |
+| `scripts/consistency_audit.py` | Cross-table agreement audit (season_stats vs game_stats vs pbp) |
 | `scripts/build.py` | Orchestrator — composes all phases |
 | `scripts/build_sqlite.py` | Mirror the built DuckDB to a SQLite sibling |
 | `scripts/download.py` | Pull raw files declared in `schema.SOURCES` into `data/raw/` |

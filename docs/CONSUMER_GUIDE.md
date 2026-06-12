@@ -130,6 +130,26 @@ JOIN games g
    OR (g.away_team = gs.team AND g.home_team = gs.opponent_team));
 ```
 
+### 4a. Which table is authoritative — season_stats vs game_stats vs play_by_play
+
+Measured agreement (full audit: `python3 scripts/consistency_audit.py`, results
+in `data/consistency_report.json`):
+
+- **`season_stats` ≡ SUM(`game_stats`)** — exact for all 18 audited stats across
+  all 61.5K player-seasons, REG and POST. Use whichever grain fits; they never
+  disagree.
+- **`play_by_play`-derived totals are close but NOT authoritative.** Counting
+  stats rebuilt from pbp role columns match official stats 99.4-100% of
+  player-seasons. The gaps: (1) laterals — credit the original ball-carrier in
+  the role columns; add `lateral_rushing_yards`/`lateral_receiving_yards` by
+  `lateral_*_player_id` to recover (rushing becomes exact, receiving ~99.4%);
+  (2) official scoring corrections applied to stat feeds but never retrofitted
+  into pbp (~70 player-seasons, max 20 yds).
+
+**Rule: use `season_stats`/`game_stats` for totals and leaderboards; use
+`play_by_play` only for play-level detail (situational splits, EPA/WPA, who
+did what on a specific play).**
+
 ### 4b. Relocated franchises: group by `teams.team_id`, not team code
 
 Stat tables use era-correct codes (OAK through 2019, LV after; SD/LAC; STL/LA).

@@ -1,0 +1,83 @@
+{
+  "generated_at": "2026-06-12T23:07:28.451624+00:00",
+  "pass1_season_vs_game_stats": {
+    "player_seasons": 61533,
+    "completions": 0,
+    "attempts": 0,
+    "passing_yards": 0,
+    "passing_tds": 0,
+    "passing_interceptions": 0,
+    "carries": 0,
+    "rushing_yards": 0,
+    "rushing_tds": 0,
+    "receptions": 0,
+    "targets": 0,
+    "receiving_yards": 0,
+    "receiving_tds": 0,
+    "def_sacks": 0,
+    "def_interceptions": 0,
+    "def_tackles_solo": 0,
+    "fg_made": 0,
+    "fg_att": 0,
+    "fantasy_points_ppr": 0,
+    "diff_total": 0
+  },
+  "pass2_pbp_vs_season_stats_reg": {
+    "def_sacks": {
+      "n": 10689,
+      "pct_exact": 100.0,
+      "max_diff": 0.0
+    },
+    "passing_ints": {
+      "n": 2864,
+      "pct_exact": 100.0,
+      "max_diff": 0.0
+    },
+    "passing_tds": {
+      "n": 2864,
+      "pct_exact": 100.0,
+      "max_diff": 0.0
+    },
+    "passing_yards": {
+      "n": 2332,
+      "pct_exact": 99.91,
+      "max_diff": 14.0
+    },
+    "receiving_tds": {
+      "n": 12784,
+      "pct_exact": 99.9,
+      "max_diff": 2.0
+    },
+    "receiving_yards": {
+      "n": 12194,
+      "pct_exact": 99.44,
+      "max_diff": 20.0
+    },
+    "receptions": {
+      "n": 12784,
+      "pct_exact": 100.0,
+      "max_diff": 0.0
+    },
+    "rushing_tds": {
+      "n": 8850,
+      "pct_exact": 99.95,
+      "max_diff": 1.0
+    },
+    "rushing_yards": {
+      "n": 8510,
+      "pct_exact": 100.0,
+      "max_diff": 0.0
+    }
+  },
+  "pass2_floors": {
+    "passing_yards": 99.5,
+    "passing_tds": 99.9,
+    "passing_ints": 99.9,
+    "rushing_yards": 99.0,
+    "rushing_tds": 99.5,
+    "receptions": 99.9,
+    "receiving_yards": 97.0,
+    "receiving_tds": 99.5,
+    "def_sacks": 99.9
+  }
+}
