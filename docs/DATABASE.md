@@ -188,7 +188,7 @@ WHERE q.season = 2023;
 
 Master registry of all NFL players with biographical and career information.
 
-**Rows:** 28,153 | **Years:** 1999-2025 | **Columns:** 39
+**Rows:** 28,153 | **Years:** 1999-2026 | **Columns:** 39
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -1418,12 +1418,12 @@ See [`../README.md`](../README.md) for the full CLI reference and [`DESIGN_RATIO
 - **Column naming**: All tables use nflverse-native column names — no custom renames applied during load.
 - **All position groups**: `game_stats`/`season_stats` include ~115 columns covering every position (offensive, defensive, kicking, special teams).
 - **`season_stats.recent_team`**: Backfilled from `game_stats.team` (most common team per player-season); nflverse source doesn't always populate it.
-- **`game_id` in `game_stats`**: Populated for ~89% of rows post-build. The `game_id_from_games` fill rule derives `game_id` from `games` on `(season, week, team, opponent_team)` for rows where upstream left it NULL. Remaining gap is games for which opponent_team is NULL upstream — filter on `game_id IS NOT NULL` when a hard join is required.
+- **`game_id` in `game_stats` / `team_game_stats`**: Populated for ~99.5% of rows post-build (FK to `games`). The `game_id_from_games` / `team_game_stats_game_id_from_games` fill rules derive `game_id` from `games` by matching `(season, week)` where either of the row's team codes appears, guarded by `HAVING COUNT(*) = 1` so an ambiguous week never fills a wrong game (handles era/modern code drift like OAK↔LV). The residual gap is rows with no unambiguous `games` match — filter `game_id IS NOT NULL` when a hard join is required.
 - **`depth_charts` vs `depth_charts_daily`**: Separate tables due to nflverse schema change in 2025. The 2025+ format uses daily snapshots (`dt` column) instead of weekly, and has a different position structure.
 - **`combine` table**: Has no join edges to other tables — query separately.
 - **NGS `stat_type`**: `passing`, `rushing`, `receiving`; `week=0` = season totals.
 - **PFR `stat_type`**: `pass`, `rush`, `rec` (different naming from NGS!).
-- **QBR**: `season_type` is `"Regular"` or `"Postseason"`. No season-total rows exist — aggregate weekly rows with `AVG(qbr_total)` grouped by player + season. Filter `qualified = 1` (ESPN's qualifying threshold) or `qb_plays >= 200` for starter-level samples.
+- **QBR**: `season_type` is `"Regular"` or `"Postseason"`. No season-total rows exist — aggregate weekly rows with `AVG(qbr_total)` grouped by player + season. Filter `qualified = 1` (ESPN's qualifying threshold) or `qb_plays >= 200` for starter-level samples. `game_id` is canonical (FK to `games`, filled from `games.espn`); ESPN's native id is preserved as `espn_game_id`.
 - **Schema drift**: Handled automatically by the build scripts, which add missing columns via `ALTER TABLE`.
 - **Join path**: `game_stats.player_gsis_id = players.player_gsis_id` — direct join, no name translation needed.
 - **Draft picks**: Go back to 1980 with career stats, Pro Bowl/All-Pro counts, and HOF flag.

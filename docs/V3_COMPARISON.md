@@ -88,9 +88,9 @@ Plus three analytical views: `v_depth_charts`, `v_player_careers`, `v_draft_pick
 
 **`expected_gaps` declarations on SOURCES** — data-reality annotations (e.g., `combine.player_pfr_id.null_rate.max = 0.22`). Validation checks observed vs declared within 2pp. Makes normal data reality explicit instead of treating it as a bug.
 
-**`scripts/canary_queries.py` + `data/canary_proof.json`** — 19 committed LLM-style queries with expected result shapes. Each build regenerates proof; `--verify` diffs for regressions. Would have caught v2's draft_picks regression automatically.
+**`scripts/canary_queries.py` + `data/canary_proof.json`** — 23 committed LLM-style queries with expected result shapes. Each build regenerates proof; `--verify` diffs for regressions. Would have caught v2's draft_picks regression automatically.
 
-**`docs/DESIGN_RATIONALE.md`** — 18 rules with origin, code path, and don't-change-without clause. Every v1/v2 scar encoded as institutional memory. The 'why' outlives the code.
+**`docs/DESIGN_RATIONALE.md`** — 24 rules with origin, code path, and don't-change-without clause. Every v1/v2 scar encoded as institutional memory. The 'why' outlives the code.
 
 **`docs/LESSONS_LEARNED.md`** — field guide of upstream reality, technical constraints, pipeline architecture, query ergonomics, process lessons. Required reading before dropping any v1/v2 mechanism.
 

@@ -193,22 +193,40 @@ LLM-query authors.
 
 ---
 
-## R9. Foreign-namespace IDs don't get FKs
+## R9. Foreign-namespace IDs get a canonical column when a bridge exists; otherwise no FK
 
-**Rule:** A column whose values are in a different ID namespace from our
-canonical cannot have an FK declaration. `qbr.game_id` holds ESPN numeric
-IDs like `260910009` — no FK to `games.game_id` (which uses
-`2024_01_KC_BUF`). Similarly `officials.game_id` uses NFL's internal
-`YYYYMMDDGG`.
+**Rule:** You cannot FK a column whose *values* are in a different ID
+namespace than the canonical target — `qbr`'s upstream id is ESPN's
+`260910009`, not `games.game_id`'s `2024_01_KC_BUF`. Two correct outcomes:
+1. **A crosswalk exists → derive a canonical column and FK that.** The
+   schedules feed carries alt-namespace ids (`games.espn`, `.pfr`, `.pff`,
+   `.ftn`). So `qbr` keeps ESPN's id as `espn_game_id` and gets a *new*
+   canonical `game_id` filled from `games.espn` (FK declared). See
+   ~~the old "no FK ever"~~ supersession below and R20.
+2. **No crosswalk → no FK.** `officials.game_id` is NFL's internal
+   `YYYYMMDDGG`; it's renamed `old_game_id` and joins `games.old_game_id`
+   (which games *does* carry), so even this one has a target — the truly
+   un-FK-able case is a foreign id with no corresponding column in the
+   parent at all.
 
-**Why:** FK violations on INSERT. Silent join-miss if FK-constraint-less.
+**Superseded (2026-06):** R9 originally read "foreign-namespace IDs don't
+get FKs," and `qbr.game_id` was left FK-less. We found `games.espn` bridges
+the namespace and now fill `qbr.game_id` from it (10,705/10,709 rows). The
+INSERT-violation risk that motivated the original rule is avoided because
+the canonical column is *derived*, never loaded raw.
+
+**Why:** FK violations on INSERT if you FK raw foreign-namespace values;
+silent join-miss if a bridgeable id is left unbridged (the qbr case — every
+LLM consumer hit the "join returns 0 rows" trap).
 
 **Origin:** v2's first build tried to FK `qbr.game_id → games.game_id`;
-FK violation on row 1.
+violation on row 1 → R9 (no FK). 2026-06 schema dive found the `games.espn`
+bridge → the fill-then-FK approach above.
 
-**Code:** `scripts/schema.py:SOURCES["qbr_week"]` declares `id_cleanup`
-on `game_id` but `TABLES["qbr"]["foreign_keys"]` omits it. Comment in the
-SOURCES entry explains the namespace mismatch.
+**Code:** `scripts/schema.py:SOURCES["qbr_week"]` renames `game_id →
+espn_game_id` and `ensure_columns` a blank `game_id`;
+`FILL_RULES["qbr_game_id_from_games"]` populates it; `TABLES["qbr"]`
+declares the FK. `officials` keeps the `game_id → old_game_id` rename.
 
 ---
 
@@ -316,8 +334,10 @@ expect silent breaking changes. `pfr_advanced.tm → team` and
 v3 explicitly supports aliases.
 
 **Code:** `scripts/schema.py:SOURCES["pfr_advanced_season_rush"]` keeps
-native `tm` (no rename). `scripts/schema.py:SOURCES["qbr_week"]` keeps
-native `game_id` (no rename). Renames that DO happen must be annotated.
+native `tm` (no rename). `qbr_week` now renames `game_id → espn_game_id`
+*and* adds a derived canonical `game_id` (R9) — the ESPN id stays reachable
+under the explicit name, so no consumer loses access. Renames that DO happen
+must be annotated.
 
 ---
 
@@ -398,6 +418,132 @@ apply_fill_rule` retains its SQL path for `players` fills and
 Each batch ran fast, but the weekly_rosters alt-ID fills (8 separate
 UPDATEs on 906K rows) dominated runtime. Switching to pandas merges cut
 finalize from a projected 10+ minutes to 1:32.
+
+---
+
+## R19. Era-tolerant `game_id` recovery with a uniqueness guard
+
+**Rule:** When backfilling `game_id` on stat tables from `games`, match on
+`(season, week)` where *either* of the row's team codes appears on *either*
+side of a game, and require `HAVING COUNT(*) = 1`. Don't require both codes
+to match exactly — older rows pair an era code with a modern franchise code
+in the same row (`team='OAK', opponent_team='LV'`), so a both-sides-exact
+join misses them. The `HAVING COUNT(*)=1` guard means an ambiguous week
+fills nothing rather than guessing wrong.
+
+**Why:** The naive `(season, week, team, opponent_team)` exact-match left
+`game_stats.game_id` at 89% and `team_game_stats.game_id` at 12%. The
+either-code form reaches ~99.5% on both with zero wrong fills.
+
+**Origin:** 2026-06 schema dive. Replaced the exact-match fill after
+measuring the residual gap was almost entirely era/modern code drift.
+
+**Code:** `FILL_RULES["game_stats_game_id_from_games"]`,
+`["team_game_stats_game_id_from_games"]`. Don't change without re-running
+`scripts/consistency_audit.py` and the FK orphan sweep (R14).
+
+---
+
+## R20. Categorical value normalization via `replace_values`
+
+**Rule:** When one upstream feed encodes a categorical value differently
+from every other table, normalize it at load with a declarative
+`SOURCES[x]["replace_values"]` map — don't leave the variant to leak into
+joins. The first case: the 2001-2002 player/team stats feeds code
+Jacksonville as `JAC`; `games`, rosters, pbp, and `teams` all use `JAX`.
+
+**Why:** `JAC` rows silently failed `teams`/`games` joins and were exactly
+the rows whose `game_id` couldn't be recovered (R19). 615 rows across the
+stat tables.
+
+**Origin:** 2026-06 schema dive, found by probing `team`-code coverage
+across every table.
+
+**Code:** `scripts/loaders.py` (`replace_values` step),
+`SOURCES["stats_player_*"]` / `["stats_team_*"]`.
+
+---
+
+## R21. Provisional duplicates in a UNIQUE column are nulled at load
+
+**Rule:** A column declared UNIQUE (e.g. `games.old_game_id`) must tolerate
+upstream provisional placeholders that collide. Declare
+`SOURCES[x]["null_duplicate_values"]` to null colliding values at load
+rather than dropping rows or the constraint.
+
+**Why:** A new season's schedule ships unscheduled flex-window games with
+duplicate provisional `old_game_id`s; the raw load violated the UNIQUE
+constraint and crashed the build. The real id is reissued upstream once the
+slate is finalized, so nulling the placeholder (not the row) is correct.
+
+**Origin:** 2026-06 — the 2026 schedule's Week 16/17 flex games broke the
+first refresh build.
+
+**Code:** `scripts/loaders.py` (`null_duplicate_values` step),
+`SOURCES["schedules"]`.
+
+---
+
+## R22. Year-partitioned sources stamp `season` when rows aren't season-keyed
+
+**Rule:** A year-partitioned source whose rows don't themselves carry the
+season (only a date, etc.) must declare `stamp_year_column` so the loader
+writes the file's year onto each row. This keeps the table season-queryable
+and makes `build.py --years` incremental rebuilds correct.
+
+**Why:** `depth_charts_daily` rows carry only a `dt` date. Without a stamped
+`season`, every cross-season query had to re-derive it from `dt` (the old
+`v_depth_charts` view did exactly that), and `--years 2026` couldn't target
+the right partition.
+
+**Origin:** 2026-06 — converting the hardcoded single-year `depth_charts_2025`
+source into a year-partitioned `depth_charts_daily` (so 2026+ files load
+automatically).
+
+**Code:** `scripts/loaders.py` (`stamp_year_column` step),
+`SOURCES["depth_charts_daily"]`; simplified `views.py:v_depth_charts_sql`.
+
+---
+
+## R23. Cross-table stat consistency is audited and gated
+
+**Rule:** The three sources a consumer can answer the same stat question
+from — `season_stats`, `SUM(game_stats)`, and `play_by_play`-derived
+totals — are audited for agreement, with regression floors that fail on
+drift. `season_stats ≡ SUM(game_stats)` must stay EXACT (canary Q23 +
+`consistency_audit.py` pass 1); pbp-derived totals are informational with
+floors (pass 2).
+
+**Why:** An LLM consumer picks whichever table is handy. If they silently
+diverge, answers are wrong in a way no FK or orphan check catches. The audit
+makes "which table is authoritative" a measured fact, not a guess: totals
+come from `season_stats`/`game_stats`; pbp is for play-level detail only
+(laterals + unretrofitted scoring corrections make pbp-summed totals off for
+~0.6% of player-seasons).
+
+**Origin:** 2026-06 schema dive — replayed the agent's real query history
+and audited stat agreement across all three grains.
+
+**Code:** `scripts/consistency_audit.py`, canary `Q23`,
+`data/consistency_report.json`. Floors in `PASS2_FLOORS`.
+
+---
+
+## R24. Freshness is judged by asset timestamps, not release timestamps
+
+**Rule:** `check_updates.py` must compare the newest *asset* `updated_at`
+per GitHub release, not the release-level `published_at`. nflverse
+republishes data by re-uploading assets into an existing release; the
+release timestamp freezes at creation.
+
+**Why:** The release-timestamp check reported "NO CHANGES" while two months
+of new data (2026 draft, free agency, schedule) sat upstream. Freshness
+detection that silently goes stale is worse than none.
+
+**Origin:** 2026-06 — the staleness that triggered the whole refresh.
+
+**Code:** `scripts/check_updates.py:get_release_info` (max asset
+`updated_at`); suggestions emit source ids, not table names.
 
 ---
 

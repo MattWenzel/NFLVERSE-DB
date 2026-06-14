@@ -51,6 +51,15 @@ namespace, rename to the specific namespace (`espn_game_id`, `nfl_game_id`) OR
 keep the native name with an explicit `no-fk, foreign-namespace` annotation. Never
 declare an FK without verifying the two sides share a namespace.
 
+**2026-06 update:** "foreign namespace ⇒ no FK" was too absolute. The
+schedules feed carries alt-namespace ids (`games.espn`, `.pfr`, `.pff`,
+`.ftn`), so a foreign id often *can* be bridged: rename the raw value to its
+explicit namespace (`qbr.game_id → espn_game_id`), add a derived canonical
+`game_id`, fill it from the crosswalk, and FK *that*. `qbr` now joins
+`games` directly. See DESIGN_RATIONALE R9/R20. The rule becomes: rename to
+make the namespace explicit, then bridge to canonical if a crosswalk exists;
+only leave FK-less when no crosswalk does.
+
 ### 1.3 Schema drift across year partitions is normal
 
 `game_stats` files pre-2022 don't have a `game_id` column at all. `pfr_advstats/
@@ -172,6 +181,46 @@ the bridge. Each source's contribution is logged. Hub coverage is asserted
 post-merge — fails if GSIS coverage drops below historical baseline.
 
 ---
+
+### 1.11 Relocated franchises share `teams.team_id`; stat feeds use era codes
+
+`teams.team_id` is the franchise key, stable across relocations: OAK/LV =
+2520, SD/LAC = 4400, STL/LA/LAR = 2510. Stat tables store the era-correct
+team *code* (`OAK` through 2019, `LV` after). So "Raiders all-time" can't
+filter a single modern code — join era codes through `teams.team_abbr` and
+group by `team_id`. Documented for consumers in CONSUMER_GUIDE §4b.
+
+Related: one feed (2001-2002 player/team stats) codes Jacksonville as `JAC`
+while everything else uses `JAX`. Normalized at load (DESIGN_RATIONALE R20)
+so it doesn't masquerade as a separate franchise.
+
+### 1.12 nflverse republishes by re-uploading assets, not cutting releases
+
+A GitHub release's `published_at` freezes at creation. nflverse pushes new
+data by re-uploading *assets* into the existing release, so the only honest
+freshness signal is the newest asset `updated_at`. Checking the release
+timestamp reports "no changes" indefinitely while data flows underneath it —
+this is exactly how two months of 2026 offseason data went unnoticed.
+DESIGN_RATIONALE R24.
+
+### 1.13 New-season schedules ship provisional, colliding game ids
+
+Before a season's flex-window slate is finalized, those games carry
+placeholder `old_game_id`s that duplicate each other — which violates the
+UNIQUE constraint `games.old_game_id` if loaded raw. The real ids are
+reissued upstream once games are scheduled. Null the placeholders at load,
+keep the rows (DESIGN_RATIONALE R21).
+
+### 1.14 Rookie GSIS ids and the trades feed lag the actual offseason
+
+Post-draft, rookie `gsis_id`s propagate gradually: 5 weeks after the 2026
+draft only 45/257 picks had one (the 2023-25 classes are all 100%). During
+that window the players hub may hold two rows per rookie (an Elias-format id
+from `players.parquet` plus a `00-`-format GSIS row) with no shared alt-id
+to merge on — it self-heals upstream before any stats exist, so don't build
+a name-based merge for it. Separately, the PFR-sourced `trades` feed lags
+real transactions by weeks-to-months; rosters, `players`, and `contracts`
+reflect a move first.
 
 ## 2. Technical constraints (DuckDB, pandas, SQLite)
 
@@ -407,13 +456,17 @@ write UNION ALL queries for cross-position leaderboards.
 position = 'QB'` and it works. Normalization is the consumer's job if they
 need it.
 
-### 4.4 ESPN numeric game_ids can't FK to nflverse game_ids
+### 4.4 ESPN numeric game_ids CAN be bridged to nflverse game_ids ~~can't FK~~
 
-Different ID namespaces. See §1.2.
+~~Different ID namespaces; don't FK.~~ **Superseded 2026-06.** They share no
+namespace directly, but `games.espn` is a crosswalk. `qbr` now keeps ESPN's
+id as `espn_game_id` and carries a canonical `game_id` filled from
+`games.espn` (FK declared, 10,705/10,709 rows). See §1.2 update and
+DESIGN_RATIONALE R9.
 
-**v3 rule:** FK declarations require namespace alignment. When a source's
-column is a foreign-namespace ID, rename to make the namespace explicit AND
-don't declare an FK.
+**v3 rule:** FK declarations require namespace alignment — get it by
+*deriving* a canonical column from a crosswalk, not by FK-ing raw foreign
+values. Only leave a foreign id FK-less when no crosswalk column exists.
 
 ### 4.5 Some "missing" data is data reality
 

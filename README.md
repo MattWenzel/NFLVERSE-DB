@@ -84,9 +84,9 @@ Eleven phases, each producing an artifact the next phase validates against:
 | 7. Name-match recovery | Pre-GSIS HoF draft picks resolved by `(name, position, season-active)` (pandas) |
 | 8. Fill rules | Cross-table value backfills (pandas for >100K-row tables, SQL UPDATE for `players`) |
 | 9. Views + indexes | `v_depth_charts`, `v_player_careers`, `v_draft_pick_careers`; hash indexes on frequent joins |
-| 10. Validation | `data/canary_proof.json` — 19 committed LLM queries; plus FK orphan sweep, 0-tolerance integrity gates |
+| 10. Validation | `data/canary_proof.json` — 23 committed LLM queries; plus FK orphan sweep, 0-tolerance integrity gates |
 
-See [`docs/DESIGN_RATIONALE.md`](docs/DESIGN_RATIONALE.md) for the 18 rules that each phase exists to enforce, and [`docs/LESSONS_LEARNED.md`](docs/LESSONS_LEARNED.md) for the upstream-data reality that motivated the design. Phases 6-8 join in pandas and bulk-replace tables — `UPDATE ... SET ... (SELECT ... correlated)` on a 906K-row table measured 10+ minutes; the pandas path runs in under a minute (R18).
+See [`docs/DESIGN_RATIONALE.md`](docs/DESIGN_RATIONALE.md) for the 24 rules that each phase exists to enforce, and [`docs/LESSONS_LEARNED.md`](docs/LESSONS_LEARNED.md) for the upstream-data reality that motivated the design. Phases 6-8 join in pandas and bulk-replace tables — `UPDATE ... SET ... (SELECT ... correlated)` on a 906K-row table measured 10+ minutes; the pandas path runs in under a minute (R18).
 
 ## CLI
 
@@ -194,7 +194,7 @@ The data itself is **not** part of this repository — it's downloaded from nflv
 Per CC-BY-4.0 §3(a)(1)(B), these build scripts modify the source data while loading it:
 
 - Junk ID sentinels (`''`, `'0'`, `'XX-0000001'`, etc.) are normalized to NULL.
-- The `JAC` team-code variant (2001-2002 stats feeds only) is normalized to `JAX` to match every other table. Rows are preserved; only the bad-reference column is cleared.
+- The `JAC` team-code variant (2001-2002 stats feeds only) is normalized to `JAX` so Jacksonville joins to `teams` and `games` like every other table. Only the team-code value changes; the row and its stats are untouched.
 - Player-ID columns on player-level tables are normalized to `player_gsis_id` / `player_pfr_id` / `player_espn_id` so cross-table joins don't need name translation. The `player_ids` bridge keeps its short column names.
 - Duplicate rows are removed on each table's natural key.
 - The `players` registry is enriched beyond nflverse's primary `players.parquet`: a priority-merge across `players.parquet`, `db_playerids.csv` (dynastyprocess), `weekly_rosters`, `draft_picks`, and `combine` produces one canonical row per player. Stubs are added for any FK target not otherwise resolvable.
